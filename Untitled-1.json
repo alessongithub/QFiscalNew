@@ -1,0 +1,218 @@
+<nfeProc xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+<NFe xmlns="http://www.portalfiscal.inf.br/nfe">
+<infNFe Id="NFe35250935283663000145550010000000131684536732" versao="4.00">
+<ide>
+<cUF>35</cUF>
+<cNF>68453673</cNF>
+<natOp>Venda de mercadoria</natOp>
+<mod>55</mod>
+<serie>1</serie>
+<nNF>13</nNF>
+<dhEmi>2025-09-19T00:00:00-03:00</dhEmi>
+<tpNF>1</tpNF>
+<idDest>1</idDest>
+<cMunFG>3539806</cMunFG>
+<tpImp>1</tpImp>
+<tpEmis>1</tpEmis>
+<cDV>2</cDV>
+<tpAmb>2</tpAmb>
+<finNFe>1</finNFe>
+<indFinal>1</indFinal>
+<indPres>0</indPres>
+<procEmi>0</procEmi>
+<verProc>QFiscal-Delphi-1.0</verProc>
+</ide>
+<emit>
+<CNPJ>35283663000145</CNPJ>
+<xNome>GILMAR MARIA TRANSPORTE</xNome>
+<xFant>G5 Digital</xFant>
+<enderEmit>
+<xLgr>Rua Alvorada</xLgr>
+<nro>156</nro>
+<xCpl>null</xCpl>
+<xBairro>Vila Jau</xBairro>
+<cMun>3539806</cMun>
+<xMun>Poa</xMun>
+<UF>SP</UF>
+<CEP>08559070</CEP>
+<cPais>1058</cPais>
+<xPais>BRASIL</xPais>
+</enderEmit>
+<IE>546313804110</IE>
+<CRT>3</CRT>
+</emit>
+<dest>
+<CNPJ>21918918000194</CNPJ>
+<xNome>NF-E EMITIDA EM AMBIENTE DE HOMOLOGACAO - SEM VALOR FISCAL</xNome>
+<enderDest>
+<xLgr>Praca Afonso Carlos Fernandes</xLgr>
+<nro>095</nro>
+<xBairro>Centro</xBairro>
+<cMun>3539806</cMun>
+<xMun>Poa</xMun>
+<UF>SP</UF>
+<CEP>08550120</CEP>
+<cPais>1058</cPais>
+<xPais>BRASIL</xPais>
+</enderDest>
+<indIEDest>9</indIEDest>
+</dest>
+<det nItem="1">
+<prod>
+<cProd>2</cProd>
+<cEAN>SEM GTIN</cEAN>
+<xProd>Camiseta Polo</xProd>
+<NCM>61051000</NCM>
+<CFOP>5102</CFOP>
+<uCom>UN</uCom>
+<qCom>1.0000</qCom>
+<vUnCom>60.0000000000</vUnCom>
+<vProd>60.00</vProd>
+<cEANTrib>SEM GTIN</cEANTrib>
+<uTrib>UN</uTrib>
+<qTrib>1.0000</qTrib>
+<vUnTrib>60.0000000000</vUnTrib>
+<indTot>1</indTot>
+</prod>
+<imposto>
+<ICMS>
+<ICMS00>
+<orig>0</orig>
+<CST>00</CST>
+<modBC>0</modBC>
+<vBC>60.00</vBC>
+<pICMS>18.0000</pICMS>
+<vICMS>10.80</vICMS>
+</ICMS00>
+</ICMS>
+<PIS>
+<PISOutr>
+<CST>49</CST>
+<vBC>60.00</vBC>
+<pPIS>0.0000</pPIS>
+<vPIS>0.00</vPIS>
+</PISOutr>
+</PIS>
+<COFINS>
+<COFINSOutr>
+<CST>49</CST>
+<vBC>60.00</vBC>
+<pCOFINS>0.0000</pCOFINS>
+<vCOFINS>0.00</vCOFINS>
+</COFINSOutr>
+</COFINS>
+</imposto>
+</det>
+<det nItem="2">
+<prod>
+<cProd>3</cProd>
+<cEAN>SEM GTIN</cEAN>
+<xProd>Camiseta Polo Feminina</xProd>
+<NCM>61051000</NCM>
+<CFOP>5102</CFOP>
+<uCom>UN</uCom>
+<qCom>1.0000</qCom>
+<vUnCom>150.0000000000</vUnCom>
+<vProd>150.00</vProd>
+<cEANTrib>SEM GTIN</cEANTrib>
+<uTrib>UN</uTrib>
+<qTrib>1.0000</qTrib>
+<vUnTrib>150.0000000000</vUnTrib>
+<indTot>1</indTot>
+</prod>
+<imposto>
+<ICMS>
+<ICMS00>
+<orig>0</orig>
+<CST>00</CST>
+<modBC>0</modBC>
+<vBC>150.00</vBC>
+<pICMS>18.0000</pICMS>
+<vICMS>27.00</vICMS>
+</ICMS00>
+</ICMS>
+<PIS>
+<PISAliq>
+<CST>01</CST>
+<vBC>150.00</vBC>
+<pPIS>0.0000</pPIS>
+<vPIS>0.00</vPIS>
+</PISAliq>
+</PIS>
+<COFINS>
+<COFINSAliq>
+<CST>01</CST>
+<vBC>150.00</vBC>
+<pCOFINS>0.0000</pCOFINS>
+<vCOFINS>0.00</vCOFINS>
+</COFINSAliq>
+</COFINS>
+</imposto>
+</det>
+<total>
+<ICMSTot>
+<vBC>210.00</vBC>
+<vICMS>37.80</vICMS>
+<vICMSDeson>0.00</vICMSDeson>
+<vFCP>0.00</vFCP>
+<vBCST>0.00</vBCST>
+<vST>0.00</vST>
+<vFCPST>0.00</vFCPST>
+<vFCPSTRet>0.00</vFCPSTRet>
+<vProd>210.00</vProd>
+<vFrete>0.00</vFrete>
+<vSeg>0.00</vSeg>
+<vDesc>0.00</vDesc>
+<vII>0.00</vII>
+<vIPI>0.00</vIPI>
+<vIPIDevol>0.00</vIPIDevol>
+<vPIS>0.00</vPIS>
+<vCOFINS>0.00</vCOFINS>
+<vOutro>0.00</vOutro>
+<vNF>210.00</vNF>
+</ICMSTot>
+</total>
+<transp>
+<modFrete>0</modFrete>
+</transp>
+<pag>
+<detPag>
+<tPag>01</tPag>
+<vPag>210.00</vPag>
+</detPag>
+</pag>
+</infNFe>
+<Signature xmlns="http://www.w3.org/2000/09/xmldsig#">
+<SignedInfo>
+<CanonicalizationMethod Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>
+<SignatureMethod Algorithm="http://www.w3.org/2000/09/xmldsig#rsa-sha1"/>
+<Reference URI="#NFe35250935283663000145550010000000131684536732">
+<Transforms>
+<Transform Algorithm="http://www.w3.org/2000/09/xmldsig#enveloped-signature"/>
+<Transform Algorithm="http://www.w3.org/TR/2001/REC-xml-c14n-20010315"/>
+</Transforms>
+<DigestMethod Algorithm="http://www.w3.org/2000/09/xmldsig#sha1"/>
+<DigestValue>Ov+3l1bZYTSKcXSWhDUseGgjHxw=</DigestValue>
+</Reference>
+</SignedInfo>
+<SignatureValue>ve74Tq0hpLR6sA97tXkx5E6AjU+NSOA5Ss2GjaUjfMmMexCdXALgNHzMk+Lrlu0YbJTsbrlZNfkoP8kvyXb7K3c92Ee7e++CKqzG8n+y49ya5VdQVD6pmLcIw3/grEKiSRzf8Dv9eJxVYByjZBtEkRX/4Gbtb/2K0TUe90RBDt5MA6U6OiG4pkzUsjgN5G0TaHiRnE01S3HcRLa288BAGLKo7Ku18+JZJK70MY6kz39NW+Wa9/4qofg6GtmYPk1kuB4fXlZRoTHre0A7V272J99VZWTABRp7hRXIqnC1abOs1MazubyW3X2jECcszR/vJ/uaWCv9AhIuypR+qqp/7A==</SignatureValue>
+<KeyInfo>
+<X509Data>
+<X509Certificate>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</X509Certificate>
+</X509Data>
+</KeyInfo>
+</Signature>
+</NFe>
+<protNFe versao="4.00">
+<infProt>
+<tpAmb>2</tpAmb>
+<verAplic>SP_NFE_PL009_V4</verAplic>
+<chNFe>35250935283663000145550010000000131684536732</chNFe>
+<dhRecbto>2025-09-19T15:10:36-03:00</dhRecbto>
+<nProt>135250007493722</nProt>
+<digVal>Ov+3l1bZYTSKcXSWhDUseGgjHxw=</digVal>
+<cStat>100</cStat>
+<xMotivo>Autorizado o uso da NF-e</xMotivo>
+</infProt>
+</protNFe>
+</nfeProc>

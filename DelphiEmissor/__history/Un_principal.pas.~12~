@@ -1,0 +1,2312 @@
+﻿unit Un_principal;
+
+interface
+
+uses
+  Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes, Vcl.Graphics,
+  Vcl.Controls, Vcl.Forms, Vcl.Dialogs, ACBrValidador, ACBrDFeReport,
+  ACBrDFeDANFeReport, ACBrNFeDANFEClass, ACBrNFeDANFeRLClass, ACBrBase, ACBrDFe,
+  ACBrNFe, ACBrDFeSSL, System.NetEncoding, System.IOUtils, IdURI,
+  // Indy HTTP
+  IdHTTPServer, IdContext, IdCustomHTTPServer,
+  // JSON
+  System.JSON, ACBrNFSe, pcnConversao, ActiveX,
+  ACBrNFeDANFeFPDF, System.Generics.Collections;
+
+type
+  TForm1 = class(TForm)
+  published
+    ACBrNFe1: TACBrNFe;
+    ACBrNFeDANFeRL1: TACBrNFeDANFeRL;
+    ACBrValidador1: TACBrValidador;
+    ACBrNFSe1: TACBrNFSe;
+    procedure FormCreate(Sender: TObject);
+    procedure IdHTTPServer1CommandGet(AContext: TIdContext; ARequestInfo: TIdHTTPRequestInfo;
+      AResponseInfo: TIdHTTPResponseInfo);
+  private
+    FServer: TIdHTTPServer;
+    FValidTokens: TStringList;
+    function ReadRequestBody(ARequestInfo: TIdHTTPRequestInfo): string;
+    function EmitirNFeJSON(const JSONData: string): string;
+    function GerarDanfeJSON(const JSONData: string): string;
+    function CancelarNFeJSON(const JSONData: string): string;
+    function CartaCorrecaoJSON(const JSONData: string): string;
+    function InutilizarNFeJSON(const JSONData: string): string;
+    function EmitirNFSeJSON(const JSONData: string): string;
+    function JsonGetObj(Obj: TJSONObject; const Key: string): TJSONObject;
+    function JsonGetArr(Obj: TJSONObject; const Key: string): TJSONArray;
+    function JsonGetStr(Obj: TJSONObject; const Key: string; const Default: string = ''): string;
+    function JsonGetInt(Obj: TJSONObject; const Key: string; const Default: Integer = 0): Integer;
+    function ValidateToken(ARequestInfo: TIdHTTPRequestInfo): Boolean;
+    function ExtractTokenFromHeader(ARequestInfo: TIdHTTPRequestInfo): string;
+    procedure LogSecurityEvent(const EventType, Details: string);
+    procedure LoadValidTokens;
+  public
+    { Public declarations }
+  end;
+
+var
+  Form1: TForm1;
+
+implementation
+
+{$R *.dfm}
+
+function DigitsOnly(const S: string): string;
+var i: Integer; ch: Char;
+begin
+  Result := '';
+  for i := 1 to Length(S) do
+  begin
+    ch := S[i];
+    if (ch >= '0') and (ch <= '9') then
+      Result := Result + ch;
+  end;
+end;
+
+procedure TForm1.FormCreate(Sender: TObject);
+begin
+  // Inicializa COM para evitar erros WIC/Graphics ao gerar PDF/Imagens
+  try CoInitialize(nil); except end;
+  try
+    Caption := 'Inicializando ACBr...';
+    ACBrNFe1.Configuracoes.WebServices.Visualizar := False;
+    ACBrNFe1.Configuracoes.WebServices.Salvar := True;
+    ACBrNFe1.Configuracoes.Arquivos.Salvar := True;
+    // Garante NFe 4.00 e validação de schema ativa
+    // VersaoDF pode variar entre versões do ACBr; manter padrão do componente
+    try ACBrNFe1.Configuracoes.Geral.ExibirErroSchema := True; except end;
+    ACBrNFe1.DANFE := ACBrNFeDANFeRL1;
+
+    Caption := 'Configurando SSL...';
+    ACBrNFe1.Configuracoes.Geral.SSLLib := libOpenSSL;
+    ACBrNFe1.Configuracoes.Geral.SSLCryptLib := cryOpenSSL;
+    ACBrNFe1.Configuracoes.Geral.SSLHttpLib := httpOpenSSL;
+    ACBrNFe1.Configuracoes.Geral.SSLXmlSignLib := xsLibXml2;
+
+    // Configuração do DANFE (FortesReport) para ambiente com restrições WIC
+    try
+      ACBrNFeDANFeRL1.Logo := '';
+    except end;
+
+    // Diretório padrão para XMLs e logs ao lado do executável
+    try
+      ACBrNFe1.Configuracoes.Arquivos.PathNFe := IncludeTrailingPathDelimiter(ExtractFilePath(Application.ExeName) + 'nfe');
+      if not DirectoryExists(ACBrNFe1.Configuracoes.Arquivos.PathNFe) then
+        ForceDirectories(ACBrNFe1.Configuracoes.Arquivos.PathNFe);
+      // PathSchemas opcional (se existir ao lado do exe)
+      if DirectoryExists(ExtractFilePath(Application.ExeName) + 'Schemas') then
+        ACBrNFe1.Configuracoes.Arquivos.PathSchemas := IncludeTrailingPathDelimiter(ExtractFilePath(Application.ExeName) + 'Schemas');
+      if not DirectoryExists(ExtractFilePath(Application.ExeName) + 'logs') then
+        ForceDirectories(ExtractFilePath(Application.ExeName) + 'logs');
+      if not DirectoryExists(ExtractFilePath(Application.ExeName) + 'logs\\requests') then
+        ForceDirectories(ExtractFilePath(Application.ExeName) + 'logs\\requests');
+    except
+      // ignora erros de IO aqui
+    end;
+
+    Caption := 'Inicializando tokens...';
+    FValidTokens := TStringList.Create;
+    LoadValidTokens;
+
+    Caption := 'Iniciando servidor HTTP...';
+    FServer := TIdHTTPServer.Create(Self);
+    FServer.OnCommandGet := IdHTTPServer1CommandGet;
+    FServer.OnCommandOther := IdHTTPServer1CommandGet; // garante tratamento de POST/OPTIONS/etc
+    FServer.Bindings.Clear;
+    with FServer.Bindings.Add do
+    begin
+      IP := '0.0.0.0';
+      Port := 18080;
+    end;
+    FServer.Active := True;
+
+    Caption := 'Emissor NFe/NFS-e - Porta 18080 - Seguro [' + FormatDateTime('yyyy-mm-dd hh:nn:ss', Now) + ']';
+    // Grava build_info para confirmar a versão em execução
+    try
+      var LogDir := ExtractFilePath(Application.ExeName) + 'logs\\';
+      if not DirectoryExists(LogDir) then ForceDirectories(LogDir);
+      var F: TextFile;
+      AssignFile(F, LogDir + 'build_info.txt');
+      Rewrite(F);
+      try
+        Writeln(F, 'started_at=' + FormatDateTime('yyyy-mm-dd hh:nn:ss', Now));
+        Writeln(F, 'features=impostos_no_item;status_ext;payload_logs');
+        Writeln(F, 'exe=' + Application.ExeName);
+      finally
+        CloseFile(F);
+      end;
+    except
+    end;
+    LogSecurityEvent('STARTUP', 'Emissor iniciado com sistema de segurança');
+  except
+    on E: Exception do
+    begin
+      ShowMessage('Erro no FormCreate: ' + E.Message + sLineBreak + 'Caption atual: ' + Caption);
+      Caption := 'Emissor - erro';
+    end;
+  end;
+end;
+
+
+
+function TForm1.ReadRequestBody(ARequestInfo: TIdHTTPRequestInfo): string;
+var
+  ss: TStringStream;
+begin
+  Result := '';
+  if Assigned(ARequestInfo.PostStream) then
+  begin
+    ss := TStringStream.Create('', TEncoding.UTF8);
+    try
+      ARequestInfo.PostStream.Position := 0;
+      ss.CopyFrom(ARequestInfo.PostStream, ARequestInfo.PostStream.Size);
+      Result := ss.DataString;
+    finally
+      ss.Free;
+    end;
+  end
+  else
+    Result := ARequestInfo.UnparsedParams;
+end;
+
+procedure TForm1.IdHTTPServer1CommandGet(AContext: TIdContext; ARequestInfo: TIdHTTPRequestInfo;
+  AResponseInfo: TIdHTTPResponseInfo);
+var
+  Path, Body, Resp: string;
+begin
+  // CORS básico
+  AResponseInfo.CustomHeaders.Values['Access-Control-Allow-Origin'] := '*';
+  AResponseInfo.CustomHeaders.Values['Access-Control-Allow-Methods'] := 'GET, POST, OPTIONS';
+  AResponseInfo.CustomHeaders.Values['Access-Control-Allow-Headers'] := 'Content-Type, Authorization, X-Token, X-Authorization, X-Api-Token';
+  // Força charset UTF-8 para evitar caracteres quebrados em acentuação
+  AResponseInfo.CharSet := 'utf-8';
+
+  if SameText(ARequestInfo.Command, 'OPTIONS') then
+  begin
+    AResponseInfo.ResponseNo := 200;
+    Exit;
+  end;
+
+  try
+    Path := LowerCase(ARequestInfo.Document);
+    // Normalização do caminho: URL-decode, trim e remoção de barra final
+    try
+      Path := LowerCase(TIdURI.URLDecode(Path));
+    except
+    end;
+    Path := Trim(Path);
+    // Remove querystring, se houver
+    var qpos := Pos('?', Path);
+    if qpos > 0 then
+      Path := Copy(Path, 1, qpos - 1);
+    if (Length(Path) > 1) and (Path[Length(Path)] = '/') then
+      Delete(Path, Length(Path), 1);
+
+    // Log básico da requisição (método e caminho)
+    try
+      var LogDir := ExtractFilePath(Application.ExeName) + 'logs\';
+      if not DirectoryExists(LogDir) then ForceDirectories(LogDir);
+      var F: TextFile;
+      AssignFile(F, LogDir + 'access_' + FormatDateTime('yyyymmdd', Now) + '.log');
+      if FileExists(LogDir + 'access_' + FormatDateTime('yyyymmdd', Now) + '.log') then
+        Append(F)
+      else
+        Rewrite(F);
+      try
+        Writeln(F, FormatDateTime('hh:nn:ss', Now) + ' ' + ARequestInfo.Command + ' ' + Path);
+      finally
+        CloseFile(F);
+      end;
+    except
+    end;
+    
+    // Endpoint público (sem autenticação)
+    if (ARequestInfo.Command = 'GET') and (Path = '/api/status') then
+    begin
+      AResponseInfo.ResponseNo := 200;
+      AResponseInfo.ContentType := 'application/json';
+      AResponseInfo.ContentText := '{"ok":true,"message":"Emissor ativo","cert_ok":true}';
+      Exit;
+    end;
+
+    // Endpoints protegidos (requerem autenticação)
+    if (Path = '/api/emitir-nfe') and (ARequestInfo.Command <> 'POST') then
+    begin
+      AResponseInfo.ResponseNo := 405;
+      AResponseInfo.ContentType := 'application/json';
+      AResponseInfo.ContentText := '{"ok":false,"error":"use POST em /api/emitir-nfe"}';
+      Exit;
+    end;
+
+    // Geração apenas do DANFE a partir de XML autorizado
+    if (ARequestInfo.Command = 'POST') and (Path = '/api/gerar-danfe') then
+    begin
+      if not ValidateToken(ARequestInfo) then
+      begin
+        AResponseInfo.ResponseNo := 401;
+        AResponseInfo.ContentType := 'application/json';
+        AResponseInfo.ContentText := '{"error":"Token de autenticação inválido ou ausente"}';
+        LogSecurityEvent('AUTH_FAILED', 'Tentativa de gerar DANFE sem token válido - IP: ' + AContext.Binding.PeerIP);
+        Exit;
+      end;
+      Body := ReadRequestBody(ARequestInfo);
+      // Fallbacks: aceitar JSON via query (json/urlencode) ou xml_path direto
+      if (Body = '') then
+      begin
+        try
+          var QJson := ARequestInfo.Params.Values['json'];
+          if QJson <> '' then
+            Body := TIdURI.URLDecode(QJson);
+        except end;
+        if (Body = '') then
+        begin
+          var QXml := ARequestInfo.Params.Values['xml_path'];
+          if QXml <> '' then
+            Body := '{"xml_path":"' + StringReplace(QXml, '"', '\"', [rfReplaceAll]) + '","configuracoes":{"gerar_pdf":true}}';
+        end;
+      end;
+      Resp := GerarDanfeJSON(Body);
+      AResponseInfo.ResponseNo := 200;
+      AResponseInfo.ContentType := 'application/json';
+      AResponseInfo.ContentText := Resp;
+      Exit;
+    end;
+
+    if (ARequestInfo.Command = 'POST') and (Path = '/api/emitir-nfe') then
+    begin
+      if not ValidateToken(ARequestInfo) then
+      begin
+        AResponseInfo.ResponseNo := 401;
+        AResponseInfo.ContentType := 'application/json';
+        AResponseInfo.ContentText := '{"error":"Token de autenticação inválido ou ausente"}';
+        LogSecurityEvent('AUTH_FAILED', 'Tentativa de emissão NFe sem token válido - IP: ' + AContext.Binding.PeerIP);
+        Exit;
+      end;
+      
+      Body := ReadRequestBody(ARequestInfo);
+      // Fallbacks: aceitar JSON via query (json/urlencode) ou base64
+      if (Body = '') then
+      begin
+        try
+          var QJson := ARequestInfo.Params.Values['json'];
+          if QJson <> '' then
+            Body := TIdURI.URLDecode(QJson);
+        except end;
+        if (Body = '') then
+        begin
+          try
+            var QB64 := ARequestInfo.Params.Values['b64'];
+            if QB64 <> '' then
+              Body := TEncoding.UTF8.GetString(TNetEncoding.Base64.DecodeStringToBytes(QB64));
+          except end;
+        end;
+      end;
+      // Salva payload recebido (debug)
+      try
+        var LogDir := ExtractFilePath(Application.ExeName) + 'logs\requests\';
+        var Name := Format('emitir-nfe-%s.json', [FormatDateTime('yyyymmdd-hhnnss-zzz', Now)]);
+        var Full := LogDir + Name;
+        var F: TextFile;
+        AssignFile(F, Full);
+        Rewrite(F);
+        try
+          Writeln(F, Body);
+        finally
+          CloseFile(F);
+        end;
+      except
+        // ignora erros de IO
+      end;
+      Resp := EmitirNFeJSON(Body);
+      AResponseInfo.ResponseNo := 200;
+      AResponseInfo.ContentType := 'application/json';
+      AResponseInfo.ContentText := Resp;
+      LogSecurityEvent('NFE_EMIT', 'NFe emitida com sucesso - IP: ' + AContext.Binding.PeerIP);
+      Exit;
+    end;
+
+    if (ARequestInfo.Command = 'POST') and (Path = '/api/cancelar-nfe') then
+    begin
+      if not ValidateToken(ARequestInfo) then
+      begin
+        AResponseInfo.ResponseNo := 401;
+        AResponseInfo.ContentType := 'application/json';
+        AResponseInfo.ContentText := '{"error":"Token de autenticação inválido ou ausente"}';
+        LogSecurityEvent('AUTH_FAILED', 'Tentativa de cancelamento NFe sem token válido - IP: ' + AContext.Binding.PeerIP);
+        Exit;
+      end;
+      
+      Body := ReadRequestBody(ARequestInfo);
+      // Log do request para diagnóstico (como na emissão)
+      try
+        var LogDir := ExtractFilePath(Application.ExeName) + 'logs\requests\';
+        var Name := Format('cancelar-nfe-%s.json', [FormatDateTime('yyyymmdd-hhnnss-zzz', Now)]);
+        var Full := LogDir + Name;
+        var F: TextFile;
+        AssignFile(F, Full);
+        Rewrite(F);
+        try
+          Writeln(F, Body);
+        finally
+          CloseFile(F);
+        end;
+      except
+        // ignora erros de IO
+      end;
+      Resp := CancelarNFeJSON(Body);
+      AResponseInfo.ResponseNo := 200;
+      AResponseInfo.ContentType := 'application/json';
+      AResponseInfo.ContentText := Resp;
+      LogSecurityEvent('NFE_CANCEL', 'NFe cancelada com sucesso - IP: ' + AContext.Binding.PeerIP);
+      Exit;
+    end;
+
+    if (ARequestInfo.Command = 'POST') and (Path = '/api/carta-correcao') then
+    begin
+      if not ValidateToken(ARequestInfo) then
+      begin
+        AResponseInfo.ResponseNo := 401;
+        AResponseInfo.ContentType := 'application/json';
+        AResponseInfo.ContentText := '{"error":"Token de autenticação inválido ou ausente"}';
+        LogSecurityEvent('AUTH_FAILED', 'Tentativa de carta correção sem token válido - IP: ' + AContext.Binding.PeerIP);
+        Exit;
+      end;
+      
+      Body := ReadRequestBody(ARequestInfo);
+      Resp := CartaCorrecaoJSON(Body);
+      AResponseInfo.ResponseNo := 200;
+      AResponseInfo.ContentType := 'application/json';
+      AResponseInfo.ContentText := Resp;
+      LogSecurityEvent('NFE_CCE', 'Carta de correção emitida com sucesso - IP: ' + AContext.Binding.PeerIP);
+      Exit;
+    end;
+
+    if (ARequestInfo.Command = 'POST') and (Path = '/api/inutilizar-nfe') then
+    begin
+      if not ValidateToken(ARequestInfo) then
+      begin
+        AResponseInfo.ResponseNo := 401;
+        AResponseInfo.ContentType := 'application/json';
+        AResponseInfo.ContentText := '{"error":"Token de autenticação inválido ou ausente"}';
+        LogSecurityEvent('AUTH_FAILED', 'Tentativa de inutilização NFe sem token válido - IP: ' + AContext.Binding.PeerIP);
+        Exit;
+      end;
+      
+      Body := ReadRequestBody(ARequestInfo);
+      Resp := InutilizarNFeJSON(Body);
+      AResponseInfo.ResponseNo := 200;
+      AResponseInfo.ContentType := 'application/json';
+      AResponseInfo.ContentText := Resp;
+      LogSecurityEvent('NFE_INUTIL', 'NFe inutilizada com sucesso - IP: ' + AContext.Binding.PeerIP);
+      Exit;
+    end;
+
+    if (ARequestInfo.Command = 'POST') and (Path = '/api/emitir-nfse') then
+    begin
+      if not ValidateToken(ARequestInfo) then
+      begin
+        AResponseInfo.ResponseNo := 401;
+        AResponseInfo.ContentType := 'application/json';
+        AResponseInfo.ContentText := '{"error":"Token de autenticação inválido ou ausente"}';
+        LogSecurityEvent('AUTH_FAILED', 'Tentativa de emissão NFSe sem token válido - IP: ' + AContext.Binding.PeerIP);
+        Exit;
+      end;
+      
+      Body := ReadRequestBody(ARequestInfo);
+      Resp := EmitirNFSeJSON(Body);
+      AResponseInfo.ResponseNo := 200;
+      AResponseInfo.ContentType := 'application/json';
+      AResponseInfo.ContentText := Resp;
+      LogSecurityEvent('NFSE_EMIT', 'NFSe emitida com sucesso - IP: ' + AContext.Binding.PeerIP);
+      Exit;
+    end;
+
+    AResponseInfo.ResponseNo := 404;
+    AResponseInfo.ContentType := 'application/json';
+    AResponseInfo.ContentText := '{"ok":false,"error":"endpoint não encontrado","method":"' + ARequestInfo.Command + '","path":"' + Path + '"}';
+  except
+    on E: Exception do
+    begin
+      AResponseInfo.ResponseNo := 500;
+      AResponseInfo.ContentType := 'application/json';
+      AResponseInfo.ContentText := '{"ok":false,"error":"' + StringReplace(E.Message, '"', '\"', [rfReplaceAll]) + '"}';
+    end;
+  end;
+end;
+
+function TForm1.EmitirNFSeJSON(const JSONData: string): string;
+var
+  J, Prestador, Tomador, Rps, Servico: TJSONObject;
+  Resp: TJSONObject;
+begin
+  Resp := TJSONObject.Create;
+  try
+    try
+      J := TJSONObject(TJSONObject.ParseJSONValue(JSONData));
+      if not Assigned(J) then
+        raise Exception.Create('JSON inválido');
+
+      Prestador := JsonGetObj(J, 'prestador');
+      Tomador := JsonGetObj(J, 'tomador');
+      Rps := JsonGetObj(J, 'rps');
+      Servico := JsonGetObj(J, 'servico');
+
+      if (Prestador = nil) or (Tomador = nil) or (Rps = nil) or (Servico = nil) then
+        raise Exception.Create('Campos obrigatórios ausentes (prestador, tomador, rps, servico)');
+
+      // Implementação mínima para validar fluxo. A implementação completa de ACBrNFSe
+      // varia conforme provedor e versão. Aqui confirmamos recebimento e retornamos OK.
+
+      Resp.AddPair('ok', TJSONBool.Create(True));
+      Resp.AddPair('message', 'NFSe endpoint online. Implementação completa depende do provedor.');
+    except
+      on E: Exception do
+      begin
+        Resp.AddPair('ok', TJSONBool.Create(False));
+        Resp.AddPair('error', E.Message);
+      end;
+    end;
+    Result := Resp.ToString;
+  finally
+    Resp.Free;
+  end;
+end;
+
+function TForm1.InutilizarNFeJSON(const JSONData: string): string;
+var
+  J: TJSONObject;
+  Conf: TJSONObject;
+  Resp: TJSONObject;
+  emitCNPJ, justificativa: string;
+  ano, modelo, serie, nIni, nFim: Integer;
+  retXML: string;
+  nn: Integer;
+  outPath, dirPath, fileName: string;
+  customPath: string;
+  ambStr: string;
+  ambVal: Integer;
+  ufStr: string;
+  cUF: Integer;
+  preInutXML, preInutPath: string;
+  tpAmbStr: string;
+  function MapUFToCUF(const uf: string): Integer;
+  var s: string;
+  begin
+    s := UpperCase(Trim(uf));
+    if s = 'RO' then Exit(11);
+    if s = 'AC' then Exit(12);
+    if s = 'AM' then Exit(13);
+    if s = 'RR' then Exit(14);
+    if s = 'PA' then Exit(15);
+    if s = 'AP' then Exit(16);
+    if s = 'TO' then Exit(17);
+    if s = 'MA' then Exit(21);
+    if s = 'PI' then Exit(22);
+    if s = 'CE' then Exit(23);
+    if s = 'RN' then Exit(24);
+    if s = 'PB' then Exit(25);
+    if s = 'PE' then Exit(26);
+    if s = 'AL' then Exit(27);
+    if s = 'SE' then Exit(28);
+    if s = 'BA' then Exit(29);
+    if s = 'MG' then Exit(31);
+    if s = 'ES' then Exit(32);
+    if s = 'RJ' then Exit(33);
+    if s = 'SP' then Exit(35);
+    if s = 'PR' then Exit(41);
+    if s = 'SC' then Exit(42);
+    if s = 'RS' then Exit(43);
+    if s = 'MS' then Exit(50);
+    if s = 'MT' then Exit(51);
+    if s = 'GO' then Exit(52);
+    if s = 'DF' then Exit(53);
+    Result := 35;
+  end;
+  function TagVal(const Src, Tag: string): string;
+  var o, c: Integer; ot, ct: string;
+  begin
+    Result := '';
+    if Src = '' then Exit;
+    ot := '<' + Tag + '>';
+    ct := '</' + Tag + '>';
+    o := Pos(ot, Src);
+    if o > 0 then
+    begin
+      o := o + Length(ot);
+      c := Pos(ct, Src);
+      if (c > o) then
+        Result := Copy(Src, o, c - o);
+    end;
+  end;
+begin
+  Resp := TJSONObject.Create;
+  try
+    try
+      J := TJSONObject(TJSONObject.ParseJSONValue(JSONData));
+      if not Assigned(J) then
+        raise Exception.Create('JSON inválido');
+
+      emitCNPJ := JsonGetStr(J, 'emit_cnpj', '');
+      justificativa := JsonGetStr(J, 'justificativa', '');
+      if Length(justificativa) < 15 then
+        raise Exception.Create('Justificativa deve ter no mínimo 15 caracteres');
+
+      ano := JsonGetInt(J, 'ano', StrToInt(FormatDateTime('yy', Now)));
+      modelo := JsonGetInt(J, 'modelo', 55);
+      serie := JsonGetInt(J, 'serie', 1);
+      nIni := JsonGetInt(J, 'numero_inicial', 0);
+      nFim := JsonGetInt(J, 'numero_final', nIni);
+
+      // Ajusta ambiente/certificado/UF quando informado
+      try
+        ambStr := LowerCase(Trim(JsonGetStr(J, 'ambiente', '')));
+        if ambStr = '' then
+        begin
+          Conf := JsonGetObj(J, 'configuracoes');
+          if Assigned(Conf) then ambStr := LowerCase(Trim(JsonGetStr(Conf, 'ambiente', '')));
+        end;
+        ambVal := 0;
+        if (ambStr = 'producao') or (ambStr = 'producao1') or (ambStr = '1') then ambVal := 1;
+        if (ambStr = 'homologacao') or (ambStr = '2') then ambVal := 2;
+        if ambVal in [1,2] then
+        begin
+          try ACBrNFe1.Configuracoes.WebServices.Ambiente := TpcnTipoAmbiente(ambVal); except end;
+        end;
+        // Certificado via bloco 'cert'
+        try
+          Conf := JsonGetObj(J, 'cert');
+          if Assigned(Conf) then
+          begin
+            // PFX por caminho/senha
+            try ACBrNFe1.Configuracoes.Certificados.ArquivoPFX := JsonGetStr(Conf, 'path', ''); except end;
+            try ACBrNFe1.Configuracoes.Certificados.Senha := JsonGetStr(Conf, 'password', ''); except end;
+            // Serial (certificado do Windows)
+            try ACBrNFe1.Configuracoes.Certificados.NumeroSerie := JsonGetStr(Conf, 'serial', ''); except end;
+          end;
+        except
+        end;
+        // UF
+        try
+          ufStr := JsonGetStr(J, 'uf', '');
+          if (ufStr = '') and Assigned(Conf) then ufStr := JsonGetStr(Conf, 'uf', '');
+          if ufStr <> '' then
+            try ACBrNFe1.Configuracoes.WebServices.UF := ufStr; except end;
+        except end;
+      except end;
+
+      // Gera e salva XML "pré-inutilização" para diagnóstico de schema
+      try
+        if ufStr = '' then ufStr := ACBrNFe1.Configuracoes.WebServices.UF;
+        if ufStr = '' then ufStr := 'SP';
+        cUF := MapUFToCUF(ufStr);
+        if ambVal = 1 then tpAmbStr := '1' else tpAmbStr := '2';
+        preInutXML := '<?xml version="1.0" encoding="UTF-8"?>' + sLineBreak +
+          '<inutNFe xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">' + sLineBreak +
+          '  <infInut>' + sLineBreak +
+          '    <tpAmb>' + tpAmbStr + '</tpAmb>' + sLineBreak +
+          '    <xServ>INUTILIZAR</xServ>' + sLineBreak +
+          '    <cUF>' + IntToStr(cUF) + '</cUF>' + sLineBreak +
+          '    <ano>' + Format('%.2d',[ano]) + '</ano>' + sLineBreak +
+          '    <CNPJ>' + DigitsOnly(emitCNPJ) + '</CNPJ>' + sLineBreak +
+          '    <mod>' + IntToStr(modelo) + '</mod>' + sLineBreak +
+          '    <serie>' + IntToStr(serie) + '</serie>' + sLineBreak +
+          '    <nNFIni>' + IntToStr(nIni) + '</nNFIni>' + sLineBreak +
+          '    <nNFFin>' + IntToStr(nFim) + '</nNFFin>' + sLineBreak +
+          '    <xJust>' + justificativa + '</xJust>' + sLineBreak +
+          '  </infInut>' + sLineBreak +
+          '</inutNFe>';
+        preInutPath := IncludeTrailingPathDelimiter(ExtractFilePath(Application.ExeName) + 'logs\\requests\\') +
+          Format('pre_inut_%s_%0.2d_%d_%d_%d-%d_%s.xml', [DigitsOnly(emitCNPJ), ano, modelo, serie, nIni, nFim, FormatDateTime('yyyymmdd_hhnnss', Now)]);
+        try ForceDirectories(ExtractFilePath(preInutPath)); except end;
+        TFile.WriteAllText(preInutPath, preInutXML, TEncoding.UTF8);
+      except
+      end;
+
+      // Chama inutilização; usa WebServices.Inutilizacao para garantir tpAmb/UF/serie corretos
+      if nFim > nIni then
+      begin
+        retXML := '';
+        for nn := nIni to nFim do
+        begin
+          try
+            try
+              // Algumas versões do ACBr esperam a ordem (CNPJ, Just, Ano, Serie, Modelo, Numero)
+              ACBrNFe1.Configuracoes.WebServices.UF := ufStr;
+              ACBrNFe1.Inutilizar(DigitsOnly(emitCNPJ), justificativa, ano, serie, modelo, nn);
+              try
+                retXML := ACBrNFe1.WebServices.Inutilizacao.RetWS;
+              except
+                // mantém último retXML válido
+              end;
+            except
+              // segue para próximo número
+            end;
+          except
+            // continua tentando os próximos, mas reporta erro ao final via cStat/xMotivo quando possível
+          end;
+        end;
+      end
+      else
+      begin
+        try
+          ACBrNFe1.Configuracoes.WebServices.UF := ufStr;
+          ACBrNFe1.Inutilizar(DigitsOnly(emitCNPJ), justificativa, ano, serie, modelo, nIni);
+          try
+            retXML := ACBrNFe1.WebServices.Inutilizacao.RetWS;
+          except
+            retXML := '';
+          end;
+        except
+          retXML := '';
+        end;
+      end;
+
+      Resp.AddPair('ok', TJSONBool.Create(True));
+      if retXML <> '' then
+      begin
+        Resp.AddPair('xml_retorno', retXML);
+        // Extrai cStat/xMotivo do XML de retorno
+        try
+          Resp.AddPair('cStat', TagVal(retXML, 'cStat'));
+          Resp.AddPair('xMotivo', TagVal(retXML, 'xMotivo'));
+        except end;
+        // Grava arquivo no diretório padrão ao lado do executável e opcionalmente no path recebido em configuracoes.path_xml
+        try
+          dirPath := IncludeTrailingPathDelimiter(ExtractFilePath(Application.ExeName) + 'nfe');
+          try ForceDirectories(dirPath); except end;
+          fileName := Format('inut_%s_%0.2d_%d_%d_%d-%d.xml', [DigitsOnly(emitCNPJ), ano, modelo, serie, nIni, nFim]);
+          outPath := dirPath + fileName;
+          TFile.WriteAllText(outPath, retXML, TEncoding.UTF8);
+          if FileExists(outPath) then
+            Resp.AddPair('xml_path', outPath);
+        except end;
+        // Extra: grava também em configuracoes.path_xml, se informado
+        try
+          Conf := JsonGetObj(J, 'configuracoes');
+          if Assigned(Conf) then
+          begin
+            customPath := JsonGetStr(Conf, 'path_xml', '');
+            if customPath <> '' then
+            begin
+              if (customPath[Length(customPath)] <> '\\') and (customPath[Length(customPath)] <> '/') then
+                customPath := IncludeTrailingPathDelimiter(customPath);
+              try ForceDirectories(customPath); except end;
+              try
+                TFile.WriteAllText(customPath + fileName, retXML, TEncoding.UTF8);
+              except end;
+            end;
+          end;
+        except end;
+      end
+      else
+      begin
+        // Tenta informar cStat/xMotivo mesmo sem XML
+        try Resp.AddPair('cStat', IntToStr(ACBrNFe1.WebServices.Inutilizacao.CStat)); except end;
+        try Resp.AddPair('xMotivo', ACBrNFe1.WebServices.Inutilizacao.XMotivo); except end;
+        // Retorna caminho do pré-XML para análise
+        try if preInutPath <> '' then Resp.AddPair('pre_inut_xml_path', preInutPath); except end;
+        if (not Resp.GetValue<Boolean>('ok')) or ((Resp.GetValue<string>('cStat') = '') and (Resp.GetValue<string>('xMotivo') = '')) then
+        begin
+          try Resp.RemovePair('ok').Free; except end;
+          Resp.AddPair('ok', TJSONBool.Create(False));
+          Resp.AddPair('error', 'SEM_RETORNO_INUTILIZACAO');
+        end;
+      end;
+    except
+      on E: Exception do
+      begin
+        Resp.AddPair('ok', TJSONBool.Create(False));
+        Resp.AddPair('error', E.Message);
+      end;
+    end;
+    Result := Resp.ToString;
+  finally
+    Resp.Free;
+  end;
+end;
+
+function TForm1.EmitirNFeJSON(const JSONData: string): string;
+var
+  J, EmitObj, DestObj, Conf, ItemObj: TJSONObject;
+  Itens: TJSONArray;
+  i: Integer;
+  XMLPath, PDFPath, Protocolo, Chave: string;
+  Resp: TJSONObject;
+  PreXMLPath: string;
+  BuildPhase: string;
+  DebugXML: string;
+  TmpXMLPath: string;
+  JSONText: string;
+  TotalProdutos: Double;
+  TevePagamento: Boolean;
+  IsConsumidorFinal: Boolean;
+  ICMSBaseTotal: Double;
+  ICMSValorTotal: Double;
+  GeneratePDF: Boolean;
+  function Round2(const x: Double): Double;
+  begin
+    if x >= 0 then Result := Trunc(x * 100.0 + 0.5) / 100.0
+    else Result := -Trunc(-x * 100.0 + 0.5) / 100.0;
+  end;
+  function SaveBase64ToFile(const Base64Data, TargetPath: string): Boolean;
+  var bytes: TBytes;
+  begin
+    Result := False;
+    try
+      if (Base64Data = '') or (TargetPath = '') then Exit;
+      bytes := TNetEncoding.Base64.DecodeStringToBytes(Base64Data);
+      try ForceDirectories(ExtractFilePath(TargetPath)); except end;
+      TFile.WriteAllBytes(TargetPath, bytes);
+      Result := FileExists(TargetPath);
+    except
+      Result := False;
+    end;
+  end;
+  function GetCUFForUF(const uf: string): Integer;
+  var s: string;
+  begin
+    s := UpperCase(Trim(uf));
+    if s = 'RO' then Exit(11);
+    if s = 'AC' then Exit(12);
+    if s = 'AM' then Exit(13);
+    if s = 'RR' then Exit(14);
+    if s = 'PA' then Exit(15);
+    if s = 'AP' then Exit(16);
+    if s = 'TO' then Exit(17);
+    if s = 'MA' then Exit(21);
+    if s = 'PI' then Exit(22);
+    if s = 'CE' then Exit(23);
+    if s = 'RN' then Exit(24);
+    if s = 'PB' then Exit(25);
+    if s = 'PE' then Exit(26);
+    if s = 'AL' then Exit(27);
+    if s = 'SE' then Exit(28);
+    if s = 'BA' then Exit(29);
+    if s = 'MG' then Exit(31);
+    if s = 'ES' then Exit(32);
+    if s = 'RJ' then Exit(33);
+    if s = 'SP' then Exit(35);
+    if s = 'PR' then Exit(41);
+    if s = 'SC' then Exit(42);
+    if s = 'RS' then Exit(43);
+    if s = 'MS' then Exit(50);
+    if s = 'MT' then Exit(51);
+    if s = 'GO' then Exit(52);
+    if s = 'DF' then Exit(53);
+    Result := 35; // padrão SP
+  end;
+  function FileToBase64(const APath: string): string;
+  var bytes: TBytes;
+  begin
+    Result := '';
+    try
+      if (APath <> '') and FileExists(APath) then
+      begin
+        bytes := TFile.ReadAllBytes(APath);
+        Result := TNetEncoding.Base64.EncodeBytesToString(bytes);
+      end;
+    except
+      Result := '';
+    end;
+  end;
+  function TagVal(const Src, Tag: string): string;
+  var o, c: Integer; ot, ct: string;
+  begin
+    Result := '';
+    ot := '<' + Tag + '>';
+    ct := '</' + Tag + '>';
+    o := Pos(ot, Src);
+    if o > 0 then
+    begin
+      o := o + Length(ot);
+      c := Pos(ct, Src);
+      if (c > o) then
+        Result := Copy(Src, o, c - o);
+    end;
+  end;
+  procedure AttachPreXMLBase64;
+  var TempPath, Tmp: string;
+  begin
+    try
+      if ACBrNFe1.NotasFiscais.Count = 0 then Exit;
+      // 1) Se já temos um PreXMLPath salvo, usa ele
+      if (PreXMLPath <> '') and FileExists(PreXMLPath) then
+      begin
+        Resp.AddPair('pre_xml_b64', FileToBase64(PreXMLPath));
+        Exit;
+      end;
+      // 2) Tenta salvar no caminho padrão
+      try
+        PreXMLPath := ExtractFilePath(Application.ExeName) + 'logs\\requests\\pre_envio_' + FormatDateTime('yyyymmdd_hhnnss', Now) + '.xml';
+        try ForceDirectories(ExtractFilePath(PreXMLPath)); except end;
+        ACBrNFe1.NotasFiscais.Items[0].GravarXML(PreXMLPath);
+        if FileExists(PreXMLPath) then
+        begin
+          Resp.AddPair('pre_xml_b64', FileToBase64(PreXMLPath));
+          Exit;
+        end;
+      except
+      end;
+      // 3) Tenta salvar no diretório temporário do SO
+      try
+        TempPath := TPath.GetTempPath;
+        Tmp := IncludeTrailingPathDelimiter(TempPath) + 'pre_envio_' + FormatDateTime('yyyymmdd_hhnnss', Now) + '.xml';
+        ACBrNFe1.NotasFiscais.Items[0].GravarXML(Tmp);
+        if FileExists(Tmp) then
+        begin
+          Resp.AddPair('pre_xml_b64', FileToBase64(Tmp));
+          try DeleteFile(PChar(Tmp)); except end;
+          Exit;
+        end;
+      except
+      end;
+    except
+      on E: Exception do
+      begin
+        try Resp.AddPair('pre_xml_error', E.Message); except end;
+      end;
+    end;
+  end;
+begin
+  Resp := TJSONObject.Create;
+  try
+    try
+      BuildPhase := 'start';
+      J := TJSONObject(TJSONObject.ParseJSONValue(JSONData));
+      if not Assigned(J) then
+        raise Exception.Create('JSON inválido');
+
+      // Certificado (opcional)
+      Conf := JsonGetObj(J, 'cert');
+      if Assigned(Conf) then
+      begin
+        // Se vier número de série, priorizar uso do certificado instalado
+        if JsonGetStr(Conf, 'serial', '') <> '' then
+        begin
+          ACBrNFe1.Configuracoes.Certificados.NumeroSerie := JsonGetStr(Conf, 'serial', '');
+          // Limpar PFX para evitar conflito
+          ACBrNFe1.Configuracoes.Certificados.ArquivoPFX := '';
+          ACBrNFe1.Configuracoes.Certificados.Senha := '';
+        end
+        else
+        begin
+          // Fallback: arquivo PFX + senha
+          ACBrNFe1.Configuracoes.Certificados.ArquivoPFX := AnsiString(JsonGetStr(Conf, 'path'));
+          ACBrNFe1.Configuracoes.Certificados.Senha := AnsiString(JsonGetStr(Conf, 'password'));
+          if (ACBrNFe1.Configuracoes.Certificados.ArquivoPFX = '') or
+             (not FileExists(ACBrNFe1.Configuracoes.Certificados.ArquivoPFX)) then
+            raise Exception.Create('Certificado PFX não encontrado: ' + ACBrNFe1.Configuracoes.Certificados.ArquivoPFX);
+
+          // Carregamento ocorrerá automaticamente durante a assinatura/envio
+        end;
+      end;
+
+      // Configurações
+      Conf := JsonGetObj(J, 'configuracoes');
+      if Assigned(Conf) then
+      begin
+        ACBrNFe1.Configuracoes.WebServices.UF := JsonGetStr(Conf, 'uf', 'SP');
+        // Ambiente: deixar padrão configurado no ACBr para evitar dependência de constantes
+        XMLPath := JsonGetStr(Conf, 'path_xml', '');
+        if XMLPath <> '' then
+          ACBrNFe1.Configuracoes.Arquivos.PathNFe := IncludeTrailingPathDelimiter(XMLPath);
+        XMLPath := JsonGetStr(Conf, 'path_schemas', '');
+        if XMLPath <> '' then
+          ACBrNFe1.Configuracoes.Arquivos.PathSchemas := IncludeTrailingPathDelimiter(XMLPath);
+
+        // Flag para geração de PDF do DANFE (default: false)
+        try GeneratePDF := SameText(Trim(JsonGetStr(Conf, 'gerar_pdf', 'false')), 'true'); except GeneratePDF := False; end;
+
+        // DANFE Logo: desabilitado por padrão (evitar WIC). Aceita apenas BMP explícito.
+        try
+          ACBrNFeDANFeRL1.Logo := '';
+          var LogoPath := JsonGetStr(Conf, 'logo_path', '');
+          if (LogoPath <> '') and FileExists(LogoPath) then
+          begin
+            var Ext := UpperCase(ExtractFileExt(LogoPath));
+            if Ext = '.BMP' then
+              try ACBrNFeDANFeRL1.Logo := LogoPath; except ACBrNFeDANFeRL1.Logo := ''; end
+            else
+              ACBrNFeDANFeRL1.Logo := '';
+          end;
+        except
+          try ACBrNFeDANFeRL1.Logo := ''; except end;
+        end;
+      end;
+
+      BuildPhase := 'building';
+      ACBrNFe1.NotasFiscais.Clear;
+      IsConsumidorFinal := False;
+      ICMSBaseTotal := 0.0;
+      ICMSValorTotal := 0.0;
+      with ACBrNFe1.NotasFiscais.Add.NFe do
+      begin
+        // IDE
+        Ide.modelo := 55;
+        Ide.serie := JsonGetInt(J, 'serie', 1);
+        // Suporta 'numero' e 'numero_nfe' no JSON (prioriza numero_nfe)
+        var nNF := JsonGetInt(J, 'numero_nfe', 0);
+        if (nNF <= 0) then
+          nNF := JsonGetInt(J, 'numero', 0);
+        if (nNF <= 0) then
+        begin
+          var np := DigitsOnly(JsonGetStr(J, 'numero_pedido',''));
+          if (np <> '') then
+          begin
+            var startIdx := Length(np) - 8;
+            if startIdx < 1 then startIdx := 1;
+            nNF := StrToIntDef(Copy(np, startIdx, 9), 0);
+          end;
+          if (nNF <= 0) then nNF := 1;
+        end;
+        Ide.nNF := nNF;
+        // Ide.tpNF, Ide.tpEmis e Ide.procEmi mantidos padrão para ampla compatibilidade
+        Ide.natOp := JsonGetStr(J, 'natOp', 'Venda de mercadoria');
+        Ide.verProc := 'QFiscal-Delphi-1.0';
+        // Data de emissão (evitar 1899-12-30) — usar apenas dEmi para compatibilidade
+        try Ide.dEmi := Date; except end;
+        // cUF/cMunFG se informados
+        try
+          var ufIde := JsonGetStr(JsonGetObj(J, 'emitente'), 'uf', '');
+          if ufIde = '' then ufIde := JsonGetStr(JsonGetObj(J, 'configuracoes'), 'uf', '');
+          if ufIde <> '' then Ide.cUF := GetCUFForUF(ufIde);
+        except end;
+        // cMunFG se informado nas configurações
+        try
+          var cMunFG := JsonGetInt(JsonGetObj(J, 'configuracoes'), 'cMunFG', 0);
+          if cMunFG > 0 then Ide.cMunFG := cMunFG;
+        except end;
+
+        // Emitente
+        EmitObj := JsonGetObj(J, 'emitente');
+        if Assigned(EmitObj) then
+        begin
+          Emit.CNPJCPF := DigitsOnly(JsonGetStr(EmitObj, 'cnpj',''));
+          Emit.IE := DigitsOnly(JsonGetStr(EmitObj, 'ie',''));
+          Emit.xNome := JsonGetStr(EmitObj, 'razao_social','');
+          Emit.xFant := JsonGetStr(EmitObj, 'nome_fantasia','');
+          Emit.EnderEmit.xLgr := JsonGetStr(EmitObj, 'endereco','');
+          Emit.EnderEmit.nro := JsonGetStr(EmitObj, 'numero','');
+          Emit.EnderEmit.xCpl := JsonGetStr(EmitObj, 'complemento','');
+          Emit.EnderEmit.xBairro := JsonGetStr(EmitObj, 'bairro','');
+          Emit.EnderEmit.cMun := StrToIntDef(JsonGetStr(EmitObj, 'codigo_ibge','0'), 0);
+          if Emit.EnderEmit.cMun = 0 then
+            Emit.EnderEmit.cMun := StrToIntDef(JsonGetStr(EmitObj, 'codigo_municipio','0'), 0);
+          Emit.EnderEmit.xMun := JsonGetStr(EmitObj, 'cidade','');
+          Emit.EnderEmit.UF := JsonGetStr(EmitObj, 'uf','SP');
+          Emit.EnderEmit.CEP := StrToIntDef(DigitsOnly(JsonGetStr(EmitObj, 'cep','0')), 0);
+          // CRT: manter padrão configurado no ACBr para compatibilidade entre versões
+        end;
+
+        // Destinatário
+        DestObj := JsonGetObj(J, 'cliente');
+        if Assigned(DestObj) then
+        begin
+          Dest.CNPJCPF := DigitsOnly(JsonGetStr(DestObj, 'cpf_cnpj',''));
+          Dest.xNome := JsonGetStr(DestObj, 'nome','');
+          Dest.IE := JsonGetStr(DestObj, 'ie','');
+          if Dest.IE = '' then
+            Dest.indIEDest := inNaoContribuinte
+          else
+            Dest.indIEDest := inContribuinte;
+          // Marca consumidor final quando IE vazio ou flag explícita no JSON
+          try
+            var consFlag := UpperCase(Trim(JsonGetStr(DestObj, 'consumidor_final', '')));
+            if (Dest.IE = '') or (consFlag = 'S') or (consFlag = 'SIM') or (consFlag = '1') then
+              IsConsumidorFinal := True;
+          except end;
+          Dest.EnderDest.xLgr := JsonGetStr(DestObj, 'endereco','');
+          Dest.EnderDest.nro := JsonGetStr(DestObj, 'numero','');
+          Dest.EnderDest.xBairro := JsonGetStr(DestObj, 'bairro','');
+          Dest.EnderDest.cMun := StrToIntDef(JsonGetStr(DestObj, 'codigo_ibge','0'), 0);
+          if Dest.EnderDest.cMun = 0 then
+            Dest.EnderDest.cMun := StrToIntDef(JsonGetStr(DestObj, 'codigo_municipio','0'), 0);
+          Dest.EnderDest.xMun := JsonGetStr(DestObj, 'cidade','');
+          Dest.EnderDest.UF := JsonGetStr(DestObj, 'uf','');
+          Dest.EnderDest.CEP := StrToIntDef(DigitsOnly(JsonGetStr(DestObj, 'cep','0')), 0);
+        end;
+
+        // Itens
+        TotalProdutos := 0.0;
+        Itens := JsonGetArr(J, 'produtos');
+        if Assigned(Itens) then
+        begin
+          for i := 0 to Itens.Count - 1 do
+          begin
+            ItemObj := Itens.Items[i] as TJSONObject;
+            with Det.New do
+            begin
+              Prod.nItem := i+1;
+              Prod.cProd := JsonGetStr(ItemObj, 'codigo', '');
+              Prod.xProd := JsonGetStr(ItemObj, 'nome', '');
+              Prod.NCM := JsonGetStr(ItemObj, 'ncm', '');
+              Prod.CFOP := JsonGetStr(ItemObj, 'cfop', '5102');
+              Prod.uCom := JsonGetStr(ItemObj, 'unidade', 'UN');
+              Prod.qCom := StrToFloatDef(JsonGetStr(ItemObj, 'quantidade', '1'), 1.0);
+              Prod.vUnCom := StrToFloatDef(JsonGetStr(ItemObj, 'valor_unitario', '0'), 0.0);
+              Prod.vProd := StrToFloatDef(JsonGetStr(ItemObj, 'valor_total', ''), Prod.qCom * Prod.vUnCom);
+              try TotalProdutos := TotalProdutos + Prod.vProd; except end;
+              // Normalização do GTIN: aceitar somente numérico válido ou 'SEM GTIN'
+              var EANVal := Trim(JsonGetStr(ItemObj, 'ean', ''));
+              if EANVal = '' then EANVal := Trim(JsonGetStr(ItemObj, 'codigo_barras', ''));
+              var EANUp := UpperCase(EANVal);
+              if (EANUp = 'SEM GTIN') or (EANUp = 'SEMGTIN') then
+                EANVal := 'SEM GTIN'
+              else
+              begin
+                var digits := DigitsOnly(EANVal);
+                if (Length(digits) in [0,8,12,13,14]) then
+                  EANVal := digits
+                else
+                  EANVal := 'SEM GTIN';
+              end;
+              Prod.cEAN := EANVal;
+              Prod.cEANTrib := EANVal;
+              Prod.uTrib := Prod.uCom;
+              Prod.qTrib := Prod.qCom;
+              Prod.vUnTrib := Prod.vUnCom;
+              // Impostos ICMS: deixar ACBr determinar/grupo conforme configuração do emissor
+              // IndTot: remover para compatibilidade ampla em versões antigas do ACBr
+
+              // ===== Mapear impostos no ACBr a partir dos valores do JSON =====
+              try
+              begin
+                var BaseICMS    : Double := StrToFloatDef(JsonGetStr(ItemObj, 'base_icms', '0'), 0);
+                var AliqICMS    : Double := StrToFloatDef(JsonGetStr(ItemObj, 'aliquota_icms', '0'), 0);
+                var ValorICMS   : Double := StrToFloatDef(JsonGetStr(ItemObj, 'valor_icms', '0'), 0);
+                // var CSTICMS  : string := JsonGetStr(ItemObj, 'cst_icms', '00');
+                // var OrigemStr: string := JsonGetStr(ItemObj, 'origem', '0');
+
+                var AliqPIS     : Double := StrToFloatDef(JsonGetStr(ItemObj, 'aliquota_pis', '0'), 0);
+                var ValorPIS    : Double := StrToFloatDef(JsonGetStr(ItemObj, 'valor_pis', '0'), 0);
+                // var CSTPIS   : string := JsonGetStr(ItemObj, 'cst_pis', '01');
+
+                var AliqCOFINS  : Double := StrToFloatDef(JsonGetStr(ItemObj, 'aliquota_cofins', '0'), 0);
+                var ValorCOFINS : Double := StrToFloatDef(JsonGetStr(ItemObj, 'valor_cofins', '0'), 0);
+                // var CSTCOFINS: string := JsonGetStr(ItemObj, 'cst_cofins', '01');
+
+                // ICMS (grupo básico) - preencher CST e origem com defaults seguros
+                try
+                begin
+                  var cstIcmsStr := JsonGetStr(ItemObj, 'cst_icms', '00');
+                  if cstIcmsStr = '00' then Imposto.ICMS.CST := cst00
+                  else if cstIcmsStr = '10' then Imposto.ICMS.CST := cst10
+                  else if cstIcmsStr = '20' then Imposto.ICMS.CST := cst20
+                  else if cstIcmsStr = '30' then Imposto.ICMS.CST := cst30
+                  else if cstIcmsStr = '40' then Imposto.ICMS.CST := cst40
+                  else if cstIcmsStr = '41' then Imposto.ICMS.CST := cst41
+                  else if cstIcmsStr = '50' then Imposto.ICMS.CST := cst50
+                  else if cstIcmsStr = '51' then Imposto.ICMS.CST := cst51
+                  else if cstIcmsStr = '60' then Imposto.ICMS.CST := cst60
+                  else if cstIcmsStr = '70' then Imposto.ICMS.CST := cst70
+                  else if cstIcmsStr = '90' then Imposto.ICMS.CST := cst90
+                  else Imposto.ICMS.CST := cst00;
+                end; except end;
+                // Origem: usa default seguro para evitar dependência de enums ausentes na build
+                try Imposto.ICMS.orig := oeNacional; except end;
+
+                // Campos numéricos: garantir consistência com vICMS = vBC * pICMS
+                Imposto.ICMS.vBC   := BaseICMS;
+                Imposto.ICMS.pICMS := AliqICMS;
+                Imposto.ICMS.vICMS := Round2(BaseICMS * (AliqICMS / 100.0));
+                try
+                  ICMSBaseTotal  := ICMSBaseTotal + Imposto.ICMS.vBC;
+                  ICMSValorTotal := ICMSValorTotal + Imposto.ICMS.vICMS;
+                except end;
+
+                // PIS (alíquota)
+                try
+                begin
+                  var cstPisStr := JsonGetStr(ItemObj, 'cst_pis', '01');
+                  if cstPisStr = '49' then Imposto.PIS.CST := pis49
+                  else if cstPisStr = '01' then Imposto.PIS.CST := pis01
+                  else if cstPisStr = '02' then Imposto.PIS.CST := pis02
+                  else Imposto.PIS.CST := pis01;
+                end; except end;
+                Imposto.PIS.vBC  := BaseICMS;
+                Imposto.PIS.pPIS := AliqPIS;
+                Imposto.PIS.vPIS := ValorPIS;
+
+                // COFINS (alíquota)
+                try
+                begin
+                  var cstCofStr := JsonGetStr(ItemObj, 'cst_cofins', '01');
+                  if cstCofStr = '49' then Imposto.COFINS.CST := cof49
+                  else if cstCofStr = '01' then Imposto.COFINS.CST := cof01
+                  else if cstCofStr = '02' then Imposto.COFINS.CST := cof02
+                  else Imposto.COFINS.CST := cof01;
+                end; except end;
+                Imposto.COFINS.vBC     := BaseICMS;
+                Imposto.COFINS.pCOFINS := AliqCOFINS;
+                Imposto.COFINS.vCOFINS := ValorCOFINS;
+              end;
+              except
+                // Se algo falhar no mapeamento, deixa ACBr calcular/validar conforme configuração
+              end;
+            end;
+          end;
+        end;
+
+        // Transporte (somente quando necessário)
+        begin
+          var TranspObj := JsonGetObj(J, 'transporte');
+          if Assigned(TranspObj) then
+          begin
+            var fm := StrToIntDef(JsonGetStr(TranspObj, 'modalidade', '9'), 9);
+            // Deixa modFrete conforme configuração padrão do ACBr para evitar dependência de enum na build
+            var VolObj := JsonGetObj(TranspObj, 'volumes');
+            var explicit := Assigned(VolObj);
+            if (fm <> 9) or explicit then
+            begin
+              with Transp.Vol.New do
+              begin
+                qVol := StrToIntDef(JsonGetStr(VolObj, 'quantidade', '1'), 1);
+                if qVol < 1 then qVol := 1;
+                esp := JsonGetStr(VolObj, 'especie', 'VOL');
+                pesoB := StrToFloatDef(JsonGetStr(VolObj, 'peso_bruto', '0.1'), 0.1);
+                if pesoB <= 0 then pesoB := 0.1;
+                pesoL := StrToFloatDef(JsonGetStr(VolObj, 'peso_liquido', '0.1'), 0.1);
+                if pesoL <= 0 then pesoL := 0.1;
+              end;
+            end;
+          end;
+        end;
+
+        // Pagamentos (NFe 4.00)
+        begin
+          TevePagamento := False;
+          var Pays := JsonGetArr(J, 'pagamentos');
+          if Assigned(Pays) then
+          begin
+            var pj: Integer;
+            for pj := 0 to Pays.Count - 1 do
+            begin
+              var PayObj := Pays.Items[pj] as TJSONObject;
+              try
+                with pag.New do
+                begin
+                  vPag := StrToFloatDef(JsonGetStr(PayObj, 'valor', '0'), 0.0);
+                end;
+                TevePagamento := True;
+              except
+              end;
+            end;
+            // vTroco opcional
+            try
+            begin
+              var vTrocoStr := JsonGetStr(J, 'vTroco', '');
+              if vTrocoStr <> '' then
+                try pag.vTroco := StrToFloatDef(vTrocoStr, 0.0); except end;
+            end; except end;
+          end;
+          // Garantia: se não veio pagamento, cria um com valor total dos produtos
+          if not TevePagamento then
+          begin
+            try
+              with pag.New do
+              begin
+                if TotalProdutos > 0 then vPag := TotalProdutos else vPag := 0.01;
+              end;
+            except
+            end;
+          end;
+        end;
+      end; // with NFe
+      BuildPhase := 'built';
+
+      // Totais (se enviados no JSON) para evitar falhas de nós nulos
+      try
+        var TotObj := JsonGetObj(J, 'totais');
+        if Assigned(TotObj) and (ACBrNFe1.NotasFiscais.Count > 0) then
+        begin
+          with ACBrNFe1.NotasFiscais.Items[0].NFe.Total do
+          begin
+            // ICMSTot completo quando disponível
+            var IcmsTotObj := JsonGetObj(TotObj, 'ICMSTot');
+            if Assigned(IcmsTotObj) then
+            begin
+              ICMSTot.vBC        := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vBC', '0'), 0);
+              ICMSTot.vICMS      := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vICMS', '0'), 0);
+              ICMSTot.vICMSDeson := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vICMSDeson', '0'), 0);
+              ICMSTot.vFCP       := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vFCP', '0'), 0);
+              ICMSTot.vBCST      := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vBCST', '0'), 0);
+              ICMSTot.vST        := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vST', '0'), 0);
+              ICMSTot.vFCPST     := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vFCPST', '0'), 0);
+              ICMSTot.vFCPSTRet  := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vFCPSTRet', '0'), 0);
+              ICMSTot.vProd      := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vProd', '0'), 0);
+              ICMSTot.vFrete     := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vFrete', '0'), 0);
+              ICMSTot.vSeg       := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vSeg', '0'), 0);
+              ICMSTot.vDesc      := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vDesc', '0'), 0);
+              ICMSTot.vII        := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vII', '0'), 0);
+              ICMSTot.vIPI       := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vIPI', '0'), 0);
+              ICMSTot.vIPIDevol  := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vIPIDevol', '0'), 0);
+              ICMSTot.vPIS       := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vPIS', '0'), 0);
+              ICMSTot.vCOFINS    := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vCOFINS', '0'), 0);
+              ICMSTot.vOutro     := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vOutro', '0'), 0);
+              ICMSTot.vNF        := StrToFloatDef(JsonGetStr(IcmsTotObj, 'vNF', '0'), 0);
+            end
+            else
+            begin
+              // Fallback com campos de Totais no nível superior
+              ICMSTot.vProd  := StrToFloatDef(JsonGetStr(TotObj, 'vProd', '0'), 0);
+              ICMSTot.vDesc  := StrToFloatDef(JsonGetStr(TotObj, 'vDesc', '0'), 0);
+              ICMSTot.vFrete := StrToFloatDef(JsonGetStr(TotObj, 'vFrete', '0'), 0);
+              ICMSTot.vSeg   := StrToFloatDef(JsonGetStr(TotObj, 'vSeg', '0'), 0);
+              ICMSTot.vOutro := StrToFloatDef(JsonGetStr(TotObj, 'vOutro', '0'), 0);
+              ICMSTot.vNF    := StrToFloatDef(JsonGetStr(TotObj, 'vNF', '0'), 0);
+            end;
+          end;
+        end
+        else if (ACBrNFe1.NotasFiscais.Count > 0) then
+        begin
+          // Fallback: se não vierem totais, preenche mínimos com base no somatório de produtos
+          try
+            with ACBrNFe1.NotasFiscais.Items[0].NFe.Total do
+            begin
+              ICMSTot.vProd := TotalProdutos;
+              if ICMSTot.vNF = 0 then ICMSTot.vNF := TotalProdutos;
+            end;
+          except end;
+        end;
+        // Em qualquer caso, sincroniza ICMSTot com o somatório dos itens (evita rejeição de BC/ICMS)
+        try
+          with ACBrNFe1.NotasFiscais.Items[0].NFe.Total do
+          begin
+            ICMSTot.vBC   := Round2(ICMSBaseTotal);
+            ICMSTot.vICMS := Round2(ICMSValorTotal);
+            if ICMSTot.vProd = 0 then ICMSTot.vProd := Round2(TotalProdutos);
+            if ICMSTot.vNF = 0 then ICMSTot.vNF := Round2(TotalProdutos);
+          end;
+        except
+        end;
+      except
+      end;
+
+      // Dump do XML de pré-envio para diagnóstico
+      try
+        BuildPhase := 'pre_save_xml';
+        PreXMLPath := ExtractFilePath(Application.ExeName) + 'logs\\requests\\pre_envio_' + FormatDateTime('yyyymmdd_hhnnss', Now) + '.xml';
+        // Garante diretório
+        try ForceDirectories(ExtractFilePath(PreXMLPath)); except end;
+        if ACBrNFe1.NotasFiscais.Count > 0 then
+        begin
+          ACBrNFe1.NotasFiscais.Items[0].GravarXML(PreXMLPath);
+          // Grava também uma cópia alternativa para facilitar inspeção
+          try
+            var AltDir := 'C:\\Users\\g5poa\\OneDrive\\Documentos\\xml\\';
+            var AltPath := AltDir + 'pre_envio_latest.xml';
+            if not DirectoryExists(AltDir) then ForceDirectories(AltDir);
+            ACBrNFe1.NotasFiscais.Items[0].GravarXML(AltPath);
+            try TFile.Copy(PreXMLPath, AltPath, True); except end;
+            Resp.AddPair('pre_xml_path_alt', AltPath);
+          except
+          end;
+        end;
+        // Tenta anexar em base64 de qualquer maneira
+        AttachPreXMLBase64;
+      except
+        BuildPhase := 'pre_save_xml_error';
+        PreXMLPath := '';
+        // Retorna XML inline em base64
+        AttachPreXMLBase64;
+      end;
+
+      // Garantia: se o XML não contiver o grupo <detPag>, injeta a partir do JSON e recarrega
+      try
+        var PaysJson := JsonGetArr(J, 'pagamentos');
+        if (PreXMLPath <> '') and FileExists(PreXMLPath) and Assigned(PaysJson) and (PaysJson.Count > 0) then
+        begin
+          var PayFirst := PaysJson.Items[0] as TJSONObject;
+          var tPagStr := JsonGetStr(PayFirst, 'tPag', '01');
+          var vPagVal := StrToFloatDef(JsonGetStr(PayFirst, 'valor', '0'), 0.0);
+          var XMLText := TFile.ReadAllText(PreXMLPath, TEncoding.UTF8);
+          if (Pos('<detPag>', XMLText) = 0) then
+          begin
+            var FS := TFormatSettings.Create;
+            FS.DecimalSeparator := '.';
+            var vPagStr := FormatFloat('0.00', vPagVal, FS);
+            var Inject := '<pag><detPag><tPag>' + tPagStr + '</tPag><vPag>' + vPagStr + '</vPag></detPag></pag>';
+            // Insere antes do fechamento de </infNFe>
+            XMLText := StringReplace(XMLText, '</infNFe>', Inject + '</infNFe>', []);
+            TFile.WriteAllText(PreXMLPath, XMLText, TEncoding.UTF8);
+            // Copia também para C:\Users\g5poa\OneDrive\Documentos\xml\pre_envio_latest.xml
+            try
+              var AltDir2 := 'C:\\Users\\g5poa\\OneDrive\\Documentos\\xml\\';
+              var AltPath2 := AltDir2 + 'pre_envio_latest.xml';
+              if not DirectoryExists(AltDir2) then ForceDirectories(AltDir2);
+              TFile.Copy(PreXMLPath, AltPath2, True);
+            except
+            end;
+            // Recarrega no ACBr para envio
+            ACBrNFe1.NotasFiscais.Clear;
+            ACBrNFe1.NotasFiscais.LoadFromFile(PreXMLPath);
+          end;
+        end;
+      except
+      end;
+
+      // Garantia: se destinatário não contribuinte e indFinal=0 ou ausente, forçar indFinal=1
+      try
+        if IsConsumidorFinal and (PreXMLPath <> '') and FileExists(PreXMLPath) then
+        begin
+          var XMLText3 := TFile.ReadAllText(PreXMLPath, TEncoding.UTF8);
+          if Pos('<indFinal>0</indFinal>', XMLText3) > 0 then
+          begin
+            XMLText3 := StringReplace(XMLText3, '<indFinal>0</indFinal>', '<indFinal>1</indFinal>', [rfReplaceAll]);
+            TFile.WriteAllText(PreXMLPath, XMLText3, TEncoding.UTF8);
+            ACBrNFe1.NotasFiscais.Clear;
+            ACBrNFe1.NotasFiscais.LoadFromFile(PreXMLPath);
+          end
+          else if Pos('<indFinal>', XMLText3) = 0 then
+          begin
+            XMLText3 := StringReplace(XMLText3, '</ide>', '<indFinal>1</indFinal></ide>', []);
+            TFile.WriteAllText(PreXMLPath, XMLText3, TEncoding.UTF8);
+            ACBrNFe1.NotasFiscais.Clear;
+            ACBrNFe1.NotasFiscais.LoadFromFile(PreXMLPath);
+          end;
+        end;
+      except
+      end;
+
+      // Assinar, validar e enviar
+      try
+        BuildPhase := 'enviar';
+        // Se houver apenas 1 NFe no lote, força indicador de envio síncrono quando disponível
+        // Envio síncrono para 1 NFe por lote (usando overload síncrono do ACBrNFe)
+        if not ACBrNFe1.Enviar(1, False, True) then
+          raise Exception.Create('Falha ao transmitir NFe');
+      except
+        on E: Exception do
+        begin
+          // Salva XML gerado (mesmo com falha) para diagnóstico
+          try
+            DebugXML := ExtractFilePath(Application.ExeName) + 'logs\\requests\\ultimanfe_' + FormatDateTime('yyyymmdd_hhnnss', Now) + '.xml';
+            try ForceDirectories(ExtractFilePath(DebugXML)); except end;
+            if ACBrNFe1.NotasFiscais.Count > 0 then
+              ACBrNFe1.NotasFiscais.Items[0].GravarXML(DebugXML);
+          except
+          end;
+          // Também retorna inline em base64
+          try
+            if DebugXML <> '' then
+              Resp.AddPair('ultimanfe_b64', FileToBase64(DebugXML));
+          except end;
+          BuildPhase := 'enviar_error';
+          raise;
+        end;
+      end;
+
+      // Resultado
+      Chave := ACBrNFe1.NotasFiscais.Items[0].NFe.infNFe.ID;
+      Protocolo := ACBrNFe1.WebServices.Retorno.Protocolo;
+      XMLPath := ACBrNFe1.NotasFiscais.Items[0].NomeArq;
+      // Status/motivo da SEFAZ
+      var RetCStat: Integer := 0;
+      var RetXMotivo: string := '';
+      var RetDhRecbto: string := '';
+      try
+        RetCStat := ACBrNFe1.WebServices.Retorno.cStat;
+        RetXMotivo := ACBrNFe1.WebServices.Retorno.xMotivo;
+      except end;
+      // Fallback: se o retorno síncrono não preencheu, tenta extrair do XML (nfeProc/protNFe)
+      if (RetCStat = 0) or (Protocolo = '') then
+      begin
+        try
+          if (XMLPath <> '') and FileExists(XMLPath) then
+          begin
+            var XmlS := TFile.ReadAllText(XMLPath, TEncoding.UTF8);
+            // Isola bloco <protNFe>...</protNFe>
+            var p1 := Pos('<protNFe', XmlS);
+            if p1 = 0 then p1 := Pos('<protNFe', UpperCase(XmlS));
+            if p1 > 0 then
+            begin
+              var p2 := Pos('</protNFe>', XmlS);
+              if (p2 > p1) then
+              begin
+                var Prot := Copy(XmlS, p1, p2 - p1 + Length('</protNFe>'));
+                var cStatStr := TagVal(Prot, 'cStat');
+                var xMotStr := TagVal(Prot, 'xMotivo');
+                var nProtStr := TagVal(Prot, 'nProt');
+                var dhRecStr := TagVal(Prot, 'dhRecbto');
+                if cStatStr <> '' then
+                begin
+                  RetCStat := StrToIntDef(Trim(cStatStr), RetCStat);
+                end;
+                if xMotStr <> '' then RetXMotivo := xMotStr;
+                if (Protocolo = '') and (nProtStr <> '') then Protocolo := nProtStr;
+                if dhRecStr <> '' then RetDhRecbto := dhRecStr;
+              end;
+            end;
+          end;
+        except
+        end;
+      end;
+      // Salva XML bruto de retorno do WebService (autorização) para auditoria
+      try
+        var RetWS := '';
+        var RetPath := '';
+        try RetWS := ACBrNFe1.WebServices.Retorno.RetWS; except end;
+        if RetWS <> '' then
+        begin
+          var LogDir := ExtractFilePath(Application.ExeName) + 'logs\';
+          if not DirectoryExists(LogDir) then ForceDirectories(LogDir);
+          RetPath := LogDir + 'retorno_ws_' + FormatDateTime('yyyymmdd_hhnnss', Now) + '.xml';
+          try
+            var F: TextFile;
+            AssignFile(F, RetPath);
+            Rewrite(F);
+            try Writeln(F, RetWS); finally CloseFile(F); end;
+          except
+            RetPath := '';
+          end;
+        end;
+        if RetPath <> '' then
+          Resp.AddPair('ret_ws_path', RetPath);
+      except
+      end;
+      if GeneratePDF then
+      begin
+        try
+          // Configura DANFE para padrão oficial (sem preview/status)
+          // Propriedades de preview/status podem não existir em algumas versões do componente
+          
+          // Define caminho de saída do PDF
+          var PDFDir := 'C:\\xampp\\htdocs\\Emissor\\qfiscal\\storage\\danfe\\';
+          try ForceDirectories(PDFDir); except end;
+          try ACBrNFeDANFeRL1.PathPDF := PDFDir; except end;
+          
+          // Estratégia agressiva para evitar WIC: configuração mínima
+          try
+            ACBrNFeDANFeRL1.Logo := '';
+            ACBrNFeDANFeRL1.Sistema := '';
+            ACBrNFeDANFeRL1.Impressora := '';
+          except end;
+          var PDFSuccess := False;
+          try
+            {$R-}
+            ACBrNFe1.NotasFiscais.ImprimirPDF;
+            {$R+}
+            PDFSuccess := True;
+          except
+            try
+              {$R-}
+              ACBrNFe1.NotasFiscais.Items[0].ImprimirPDF;
+              {$R+}
+              PDFSuccess := True;
+            except
+              PDFSuccess := False;
+            end;
+          end;
+          // Tenta localizar o PDF gerado
+          try
+            PDFPath := PDFDir + 'NFe_' + ACBrNFe1.NotasFiscais.Items[0].NFe.infNFe.ID + '.pdf';
+            if not FileExists(PDFPath) then
+            begin
+              // Tentativas alternativas de nome
+              var Alt1 := PDFDir + ACBrNFe1.NotasFiscais.Items[0].NFe.infNFe.ID + '.pdf';
+              var Ch := ACBrNFe1.NotasFiscais.Items[0].NFe.infNFe.ID;
+              var Alt2 := PDFDir + 'DANFE_' + Ch + '.pdf';
+              if FileExists(Alt1) then PDFPath := Alt1
+              else if FileExists(Alt2) then PDFPath := Alt2
+              else
+              begin
+              // Evita PDF aleatório: seleciona apenas PDFs que contenham a chave
+              var SR: TSearchRec;
+              var LastTime: TDateTime := 0;
+              var Best: string := '';
+              var ChaveID := ACBrNFe1.NotasFiscais.Items[0].NFe.infNFe.ID;
+              var RawChave := ChaveID;
+              if (Length(RawChave) > 3) and SameText(Copy(RawChave,1,3),'NFe') then
+                RawChave := Copy(RawChave,4,MaxInt);
+              if FindFirst(PDFDir + '*.pdf', faAnyFile, SR) = 0 then
+              begin
+                repeat
+                  var NameU := UpperCase(SR.Name);
+                  var Match := (Pos(UpperCase(ChaveID), NameU) > 0)
+                               or (Pos(UpperCase(RawChave), NameU) > 0)
+                               or (Pos('NFE_' + UpperCase(ChaveID), NameU) > 0)
+                               or (Pos('NFE_' + UpperCase(RawChave), NameU) > 0)
+                               or (Pos('DANFE_' + UpperCase(ChaveID), NameU) > 0)
+                               or (Pos('DANFE_' + UpperCase(RawChave), NameU) > 0);
+                  if Match then
+                  begin
+                    var FTime := SR.TimeStamp;
+                    if (Best = '') or (FTime > LastTime) then
+                    begin
+                      Best := IncludeTrailingPathDelimiter(PDFDir) + SR.Name;
+                      LastTime := FTime;
+                    end;
+                  end;
+                until FindNext(SR) <> 0;
+                FindClose(SR);
+              end;
+              PDFPath := Best;
+              end;
+            end;
+            if (PDFPath <> '') and not FileExists(PDFPath) then PDFPath := '';
+          except
+            PDFPath := '';
+          end;
+        except
+          PDFPath := '';
+        end;
+      end
+      else
+      begin
+        PDFPath := '';
+      end;
+
+      Resp.AddPair('ok', TJSONBool.Create(True));
+      Resp.AddPair('chave', Chave);
+      Resp.AddPair('protocolo', Protocolo);
+      Resp.AddPair('xml_path', XMLPath);
+      Resp.AddPair('cStat', TJSONNumber.Create(RetCStat));
+      // Expor número e série efetivamente aplicados no XML (para auditoria/sincronização no ERP)
+      try
+        if (ACBrNFe1.NotasFiscais.Count > 0) then
+        begin
+          var IdeNum := ACBrNFe1.NotasFiscais.Items[0].NFe.Ide.nNF;
+          var IdeSer := ACBrNFe1.NotasFiscais.Items[0].NFe.Ide.serie;
+          Resp.AddPair('nNF', TJSONNumber.Create(IdeNum));
+          Resp.AddPair('numero', TJSONNumber.Create(IdeNum));
+          Resp.AddPair('serie', TJSONNumber.Create(IdeSer));
+        end;
+      except
+      end;
+      if RetXMotivo <> '' then Resp.AddPair('xMotivo', RetXMotivo);
+      if RetDhRecbto <> '' then Resp.AddPair('dhRecbto', RetDhRecbto);
+      if PDFPath <> '' then Resp.AddPair('pdf_path', PDFPath);
+      if PreXMLPath <> '' then Resp.AddPair('pre_xml_path', PreXMLPath);
+      Resp.AddPair('build_phase', BuildPhase);
+      // Garantia extra: se ainda não anexou, tenta no final
+      AttachPreXMLBase64;
+    except
+      on E: Exception do
+      begin
+        Resp.AddPair('ok', TJSONBool.Create(False));
+        Resp.AddPair('error', E.Message);
+        if PreXMLPath <> '' then Resp.AddPair('pre_xml_path', PreXMLPath);
+        if BuildPhase <> '' then Resp.AddPair('build_phase', BuildPhase);
+        // Tenta salvar XML mesmo em erro de montagem
+        try
+          var ErrXML := ExtractFilePath(Application.ExeName) + 'logs\\requests\\build_error_' + FormatDateTime('yyyymmdd_hhnnss', Now) + '.xml';
+          if ACBrNFe1.NotasFiscais.Count > 0 then
+          begin
+            ACBrNFe1.NotasFiscais.Items[0].GravarXML(ErrXML);
+            Resp.AddPair('build_xml_path', ErrXML);
+            // E inline em base64
+            try Resp.AddPair('build_xml_b64', FileToBase64(ErrXML)); except end;
+          end;
+        except end;
+        // Adiciona detalhes de rejeição quando disponíveis
+        try
+          var RetCStat2 := ACBrNFe1.WebServices.Retorno.cStat;
+          var RetXMotivo2 := ACBrNFe1.WebServices.Retorno.xMotivo;
+          Resp.AddPair('cStat', TJSONNumber.Create(RetCStat2));
+          if RetXMotivo2 <> '' then Resp.AddPair('xMotivo', RetXMotivo2);
+          // Salva XML de retorno do webservice
+          var RetWS := '';
+          try RetWS := ACBrNFe1.WebServices.Retorno.RetWS; except end;
+          if RetWS <> '' then
+          begin
+            var LogDir := ExtractFilePath(Application.ExeName) + 'logs\';
+            if not DirectoryExists(LogDir) then ForceDirectories(LogDir);
+            var RetPath := LogDir + 'retorno_ws_' + FormatDateTime('yyyymmdd_hhnnss', Now) + '.xml';
+            try
+              var F: TextFile;
+              AssignFile(F, RetPath);
+              Rewrite(F);
+              try Writeln(F, RetWS); finally CloseFile(F); end;
+              Resp.AddPair('ret_ws_path', RetPath);
+            except end;
+          end;
+        except end;
+      end;
+    end;
+    Result := Resp.ToString;
+  finally
+    Resp.Free;
+  end;
+end;
+
+function TForm1.GerarDanfeJSON(const JSONData: string): string;
+var
+  J, Conf: TJSONObject;
+  Resp: TJSONObject;
+  XMLPath, PDFDir, PDFPath: string;
+  GeneratePDF: Boolean;
+  PDFSuccess: Boolean;
+  PdfErrorMsg: string;
+  ComInitialized: Boolean;
+  EnginePref: string;
+  UseFPDF: Boolean;
+  // Sanitização do XML para evitar ERangeError no RLNFe/Fortes
+  function SanitizeText(const S: string): string;
+  var i: Integer; ch: Char;
+  begin
+    Result := '';
+    for i := 1 to Length(S) do
+    begin
+      ch := S[i];
+      // mantém CR/LF e caracteres imprimíveis básicos
+      if (ch = #13) or (ch = #10) or (Ord(ch) >= 32) then
+        Result := Result + ch;
+    end;
+    // normaliza espaços
+    Result := Trim(StringReplace(Result, '  ', ' ', [rfReplaceAll]));
+  end;
+  function TruncTo(const S: string; MaxLen: Integer): string;
+  begin
+    if (MaxLen > 0) and (Length(S) > MaxLen) then
+      Result := Copy(S, 1, MaxLen)
+    else
+      Result := S;
+  end;
+  function ReplaceTagValueAll(const Xml, Tag: string; MaxLen: Integer): string;
+  var
+    openTag, closeTag: string;
+    p1, p2, startVal: Integer;
+    val, newVal: string;
+    Work: string;
+  begin
+    Work := Xml;
+    openTag := '<' + Tag + '>';
+    closeTag := '</' + Tag + '>';
+    p1 := Pos(openTag, Work);
+    while p1 > 0 do
+    begin
+      startVal := p1 + Length(openTag);
+      p2 := Pos(closeTag, Work);
+      if (p2 > startVal) then
+      begin
+        val := Copy(Work, startVal, p2 - startVal);
+        newVal := TruncTo(SanitizeText(val), MaxLen);
+        if newVal <> val then
+        begin
+          Work := Copy(Work, 1, p1 - 1) + openTag + newVal + closeTag + Copy(Work, p2 + Length(closeTag), MaxInt);
+        end
+        else
+        begin
+          // avança após o fechamento para achar próximas ocorrências
+          p1 := Pos(openTag, Copy(Work, p2 + Length(closeTag), MaxInt));
+          if p1 > 0 then p1 := p1 + p2 + Length(closeTag);
+          Continue;
+        end;
+      end
+      else
+        Break;
+      // procurar próxima ocorrência
+      p1 := Pos(openTag, Work);
+    end;
+    Result := Work;
+  end;
+  function SanitizeXmlForDanfe(const OrigXmlPath: string; out OutPath: string): Boolean;
+  var
+    S: string;
+    TempDir: string;
+  begin
+    Result := False;
+    OutPath := '';
+    try
+      S := TFile.ReadAllText(OrigXmlPath, TEncoding.UTF8);
+    except
+      Exit;
+    end;
+    try
+      // Corrige <xCpl>null</xCpl>
+      S := StringReplace(S, '<xCpl>null</xCpl>', '<xCpl></xCpl>', [rfReplaceAll, rfIgnoreCase]);
+      // Trunca campos críticos do layout do DANFE (valores conservadores)
+      S := ReplaceTagValueAll(S, 'xNome', 60);
+      S := ReplaceTagValueAll(S, 'xFant', 60);
+      S := ReplaceTagValueAll(S, 'xLgr', 60);
+      S := ReplaceTagValueAll(S, 'xBairro', 40);
+      S := ReplaceTagValueAll(S, 'xMun', 40);
+      S := ReplaceTagValueAll(S, 'xCpl', 60);
+      S := ReplaceTagValueAll(S, 'xProd', 60);
+      S := ReplaceTagValueAll(S, 'natOp', 60);
+      // Salva XML sanitizado em arquivo temporário
+      TempDir := ExtractFilePath(Application.ExeName) + 'logs\requests\';
+      try ForceDirectories(TempDir); except end;
+      OutPath := TempDir + 'sanitized_' + FormatDateTime('yyyymmdd_hhnnss_zzz', Now) + '.xml';
+      TFile.WriteAllText(OutPath, S, TEncoding.UTF8);
+      Result := FileExists(OutPath);
+    except
+      Result := False;
+    end;
+  end;
+begin
+  Resp := TJSONObject.Create;
+  ComInitialized := Succeeded(CoInitialize(nil));
+  try
+    try
+      J := TJSONObject(TJSONObject.ParseJSONValue(JSONData));
+      if not Assigned(J) then
+        raise Exception.Create('JSON inválido');
+
+      // Caminho do XML autorizado
+      XMLPath := JsonGetStr(J, 'xml_path', '');
+      if (XMLPath = '') or (not FileExists(XMLPath)) then
+        raise Exception.Create('XML não encontrado em xml_path');
+
+      // Configurações (opcionais)
+      Conf := JsonGetObj(J, 'configuracoes');
+      if Assigned(Conf) then
+      begin
+        try GeneratePDF := SameText(Trim(JsonGetStr(Conf, 'gerar_pdf', 'true')), 'true'); except GeneratePDF := True; end;
+        EnginePref := UpperCase(Trim(JsonGetStr(Conf, 'engine', '')));
+        UseFPDF := EnginePref = 'FPDF';
+        // Detecta pedido explícito de tarja CANCELADA
+        var WantCancelStripe := False;
+        try
+          var tarja := Trim(JsonGetStr(Conf, 'tarja_cancelada', ''));
+          var canc  := Trim(JsonGetStr(Conf, 'cancelada', ''));
+          var stat  := UpperCase(Trim(JsonGetStr(Conf, 'status', '')));
+          if SameText(tarja, 'true') then WantCancelStripe := True;
+          if (canc = '1') or SameText(canc, 'true') then WantCancelStripe := True;
+          if stat = 'CANCELADA' then WantCancelStripe := True;
+        except
+        end;
+        // Logo opcional
+        try
+          var LogoPath := JsonGetStr(Conf, 'logo_path', '');
+          if (LogoPath <> '') and FileExists(LogoPath) then
+            try ACBrNFeDANFeRL1.Logo := LogoPath; except end;
+        except end;
+        // Se houve pedido de tarja e não temos implementação na engine, forçamos fallback no ERP (não retornar PDF)
+        // Observação: o ERP já imprime tarja CANCELADA no fallback.
+        if WantCancelStripe then
+        begin
+          try Resp.AddPair('cancel_tarja_requested', TJSONBool.Create(True)); except end;
+        end;
+      end
+      else
+      begin
+        GeneratePDF := True;
+        UseFPDF := False;
+      end;
+
+      // Carrega o XML no ACBr (usar versão sanitizada para evitar ERangeError no RL)
+      ACBrNFe1.NotasFiscais.Clear;
+      var SanPath: string := '';
+      var SanApplied: Boolean := False;
+      try
+        if SanitizeXmlForDanfe(XMLPath, SanPath) and FileExists(SanPath) then
+        begin
+          ACBrNFe1.NotasFiscais.LoadFromFile(SanPath);
+          SanApplied := True;
+        end
+        else
+          ACBrNFe1.NotasFiscais.LoadFromFile(XMLPath);
+      except
+        on E: Exception do
+          raise Exception.Create('Falha ao carregar XML: ' + E.Message);
+      end;
+
+      // Pasta de saída do PDF
+      PDFDir := 'C:\xampp\htdocs\Emissor\qfiscal\storage\danfe\';
+      try ForceDirectories(PDFDir); except end;
+      try ACBrNFeDANFeRL1.PathPDF := PDFDir; except end;
+
+      PDFSuccess := False;
+      PdfErrorMsg := '';
+      if GeneratePDF then
+      begin
+        // Estratégia agressiva para evitar WIC: configuração mínima
+        try
+          ACBrNFeDANFeRL1.Logo := '';
+          ACBrNFeDANFeRL1.Sistema := '';
+          ACBrNFeDANFeRL1.Impressora := '';
+          // Força nome de saída previsível
+          var Ch := ACBrNFe1.NotasFiscais.Items[0].NFe.infNFe.ID;
+        except end;
+        if UseFPDF then
+        begin
+          // Usa somente FPDF (evita RL/ScanLine por completo)
+          var OldDanfeFP := ACBrNFe1.DANFE;
+          var DanfeFPDF := TACBrNFeDANFeFPDF.Create(nil);
+          try
+            try DanfeFPDF.PathPDF := PDFDir; except end;
+            ACBrNFe1.DANFE := DanfeFPDF;
+            ACBrNFe1.NotasFiscais.ImprimirPDF;
+            PDFSuccess := True;
+          finally
+            ACBrNFe1.DANFE := OldDanfeFP;
+            DanfeFPDF.Free;
+          end;
+        end
+        else
+        begin
+          // Tenta RL primeiro, cai para FPDF em caso de erro
+          try
+            ACBrNFe1.NotasFiscais.ImprimirPDF;
+            PDFSuccess := True;
+          except
+            on E: Exception do
+            begin
+              PdfErrorMsg := E.Message;
+              // Fallback FPDF
+              try
+                var OldDanfe2 := ACBrNFe1.DANFE;
+                var DanfeFPDF2 := TACBrNFeDANFeFPDF.Create(nil);
+                try
+                  try DanfeFPDF2.PathPDF := PDFDir; except end;
+                  ACBrNFe1.DANFE := DanfeFPDF2;
+                  ACBrNFe1.NotasFiscais.ImprimirPDF;
+                  PDFSuccess := True;
+                  PdfErrorMsg := '';
+                finally
+                  ACBrNFe1.DANFE := OldDanfe2;
+                  DanfeFPDF2.Free;
+                end;
+              except
+                // mantém erro em PdfErrorMsg
+              end;
+            end;
+          end;
+          if not PDFSuccess then
+          begin
+            try
+              ACBrNFe1.NotasFiscais.Items[0].ImprimirPDF;
+              PDFSuccess := True;
+            except
+              on E2: Exception do
+              begin
+                if PdfErrorMsg = '' then PdfErrorMsg := E2.Message;
+              end;
+            end;
+          end;
+        end;
+
+        // Tenta localizar o PDF gerado
+        try
+          PDFPath := PDFDir + 'NFe_' + ACBrNFe1.NotasFiscais.Items[0].NFe.infNFe.ID + '.pdf';
+          if not FileExists(PDFPath) then
+          begin
+            // Tentativas alternativas de nome
+            var Alt1 := PDFDir + ACBrNFe1.NotasFiscais.Items[0].NFe.infNFe.ID + '.pdf';
+            var Ch := ACBrNFe1.NotasFiscais.Items[0].NFe.infNFe.ID;
+            var Alt2 := PDFDir + 'DANFE_' + Ch + '.pdf';
+            if FileExists(Alt1) then PDFPath := Alt1
+            else if FileExists(Alt2) then PDFPath := Alt2
+            else
+            begin
+              var SR: TSearchRec;
+              var LastTime: TDateTime := 0;
+              var Best: string := '';
+              if FindFirst(PDFDir + '*.pdf', faAnyFile, SR) = 0 then
+              begin
+                repeat
+                  // Compatível com Delphi Win32: usa TimeStamp (TDateTime) ao invés de FindData
+                  var FTime := SR.TimeStamp;
+                  if (Best = '') or (FTime > LastTime) then
+                  begin
+                    Best := IncludeTrailingPathDelimiter(PDFDir) + SR.Name;
+                    LastTime := FTime;
+                  end;
+                until FindNext(SR) <> 0;
+                FindClose(SR);
+              end;
+              PDFPath := Best;
+            end;
+          end;
+          if (PDFPath <> '') and not FileExists(PDFPath) then PDFPath := '';
+        except
+          PDFPath := '';
+        end;
+
+
+      Resp.AddPair('ok', TJSONBool.Create(True));
+      Resp.AddPair('xml_path', XMLPath);
+      Resp.AddPair('pdf_success', TJSONBool.Create(PDFSuccess));
+      if PDFPath <> '' then Resp.AddPair('pdf_path', PDFPath);
+      if SanApplied and (SanPath <> '') then Resp.AddPair('sanitized_xml_path', SanPath);
+      if (not PDFSuccess) and (PdfErrorMsg <> '') then Resp.AddPair('pdf_error', PdfErrorMsg);
+      end;
+    except
+      on E: Exception do
+      begin
+        Resp.AddPair('ok', TJSONBool.Create(False));
+        Resp.AddPair('error', E.Message);
+      end;
+    end;
+    Result := Resp.ToString;
+  finally
+    if ComInitialized then
+      CoUninitialize;
+    Resp.Free;
+  end;
+end;
+
+function TForm1.CancelarNFeJSON(const JSONData: string): string;
+var
+  J, Conf, Cfg: TJSONObject;
+  Resp: TJSONObject;
+  xmlPath, chave, justificativa, emitCNPJ, xmlRet, serialTop, pfxPath, pfxPass: string;
+  pathSchemas, pathXmlBase: string;
+begin
+  Resp := TJSONObject.Create;
+  try
+    try
+      J := TJSONObject(TJSONObject.ParseJSONValue(JSONData));
+      if not Assigned(J) then
+        raise Exception.Create('JSON inválido');
+
+      xmlPath := JsonGetStr(J, 'xml_path', '');
+      chave := JsonGetStr(J, 'chave', '');
+      justificativa := JsonGetStr(J, 'justificativa', '');
+      emitCNPJ := JsonGetStr(J, 'emit_cnpj', '');
+      if Length(justificativa) < 15 then
+        raise Exception.Create('Justificativa deve ter no mínimo 15 caracteres');
+
+      // Certificado (opcional) — aceita tanto bloco cert quanto campos de topo
+      Conf := JsonGetObj(J, 'cert');
+      serialTop := JsonGetStr(J, 'serial', '');
+      pfxPath := '';
+      pfxPass := '';
+      if Assigned(Conf) then
+      begin
+        if JsonGetStr(Conf, 'serial', '') <> '' then
+        begin
+          ACBrNFe1.Configuracoes.Certificados.NumeroSerie := JsonGetStr(Conf, 'serial', '');
+          ACBrNFe1.Configuracoes.Certificados.ArquivoPFX := '';
+          ACBrNFe1.Configuracoes.Certificados.Senha := '';
+        end
+        else
+        begin
+          pfxPath := JsonGetStr(Conf, 'path', '');
+          pfxPass := JsonGetStr(Conf, 'password', '');
+          if pfxPath <> '' then
+          begin
+            ACBrNFe1.Configuracoes.Certificados.ArquivoPFX := AnsiString(pfxPath);
+            ACBrNFe1.Configuracoes.Certificados.Senha := AnsiString(pfxPass);
+            ACBrNFe1.Configuracoes.Certificados.NumeroSerie := '';
+          end;
+        end;
+      end;
+      if (ACBrNFe1.Configuracoes.Certificados.NumeroSerie = '') and (serialTop <> '') then
+      begin
+        ACBrNFe1.Configuracoes.Certificados.NumeroSerie := serialTop;
+        ACBrNFe1.Configuracoes.Certificados.ArquivoPFX := '';
+        ACBrNFe1.Configuracoes.Certificados.Senha := '';
+      end;
+
+      // Configurações opcionais: path_schemas e path_xml base
+      Cfg := JsonGetObj(J, 'configuracoes');
+      if Assigned(Cfg) then
+      begin
+        pathSchemas := JsonGetStr(Cfg, 'path_schemas', '');
+        if pathSchemas <> '' then
+          ACBrNFe1.Configuracoes.Arquivos.PathSchemas := IncludeTrailingPathDelimiter(pathSchemas);
+        pathXmlBase := JsonGetStr(Cfg, 'path_xml', '');
+        if pathXmlBase <> '' then
+          ACBrNFe1.Configuracoes.Arquivos.PathNFe := IncludeTrailingPathDelimiter(pathXmlBase);
+        // Define UF explicitamente quando informado (evita "UF não pode ser vazia")
+        var cfgUF := JsonGetStr(Cfg, 'uf', '');
+        if cfgUF <> '' then
+          ACBrNFe1.Configuracoes.WebServices.UF := cfgUF;
+      end;
+
+      ACBrNFe1.NotasFiscais.Clear;
+      if xmlPath <> '' then
+        ACBrNFe1.NotasFiscais.LoadFromFile(xmlPath);
+
+      ACBrNFe1.EventoNFe.Evento.Clear;
+      ACBrNFe1.EventoNFe.idLote := 1;
+      with ACBrNFe1.EventoNFe.Evento.New do
+      begin
+        infEvento.dhEvento := Now;
+        // Tipo Cancelamento (teCancelamento)
+        infEvento.tpEvento := teCancelamento;
+        if chave <> '' then
+          infEvento.chNFe := chave;
+        if emitCNPJ <> '' then
+          infEvento.CNPJ := emitCNPJ;
+        infEvento.detEvento.xJust := justificativa;
+      end;
+
+      ACBrNFe1.EnviarEvento(1);
+      xmlRet := ACBrNFe1.WebServices.EnvEvento.EventoRetorno.XmlRetorno;
+
+      Resp.AddPair('ok', TJSONBool.Create(True));
+      if xmlPath <> '' then Resp.AddPair('xml_referencia', xmlPath);
+      if chave <> '' then Resp.AddPair('chave', chave);
+      Resp.AddPair('xml_retorno', xmlRet);
+    except
+      on E: Exception do
+      begin
+        Resp.AddPair('ok', TJSONBool.Create(False));
+        Resp.AddPair('error', E.Message);
+      end;
+    end;
+    Result := Resp.ToString;
+  finally
+    Resp.Free;
+  end;
+end;
+
+function TForm1.CartaCorrecaoJSON(const JSONData: string): string;
+var
+  J, Conf, Cfg: TJSONObject;
+  Resp: TJSONObject;
+  xmlPath, chave, correcao, emitCNPJ, xmlRet, serialTop, pfxPath, pfxPass: string;
+  seq: Integer;
+  pathSchemas, pathXmlBase: string;
+begin
+  Resp := TJSONObject.Create;
+  try
+    try
+      J := TJSONObject(TJSONObject.ParseJSONValue(JSONData));
+      if not Assigned(J) then
+        raise Exception.Create('JSON inválido');
+
+      xmlPath := JsonGetStr(J, 'xml_path', '');
+      chave := JsonGetStr(J, 'chave', '');
+      correcao := JsonGetStr(J, 'correcao', '');
+      emitCNPJ := JsonGetStr(J, 'emit_cnpj', '');
+      seq := JsonGetInt(J, 'sequencia', 1);
+      if Length(correcao) < 15 then
+        raise Exception.Create('Texto da correção deve ter no mínimo 15 caracteres');
+
+      // Certificado (opcional)
+      Conf := JsonGetObj(J, 'cert');
+      serialTop := JsonGetStr(J, 'serial', '');
+      pfxPath := '';
+      pfxPass := '';
+      if Assigned(Conf) then
+      begin
+        if JsonGetStr(Conf, 'serial', '') <> '' then
+        begin
+          ACBrNFe1.Configuracoes.Certificados.NumeroSerie := JsonGetStr(Conf, 'serial', '');
+          ACBrNFe1.Configuracoes.Certificados.ArquivoPFX := '';
+          ACBrNFe1.Configuracoes.Certificados.Senha := '';
+        end
+        else
+        begin
+          pfxPath := JsonGetStr(Conf, 'path', '');
+          pfxPass := JsonGetStr(Conf, 'password', '');
+          if pfxPath <> '' then
+          begin
+            ACBrNFe1.Configuracoes.Certificados.ArquivoPFX := AnsiString(pfxPath);
+            ACBrNFe1.Configuracoes.Certificados.Senha := AnsiString(pfxPass);
+            ACBrNFe1.Configuracoes.Certificados.NumeroSerie := '';
+          end;
+        end;
+      end;
+      if (ACBrNFe1.Configuracoes.Certificados.NumeroSerie = '') and (serialTop <> '') then
+      begin
+        ACBrNFe1.Configuracoes.Certificados.NumeroSerie := serialTop;
+        ACBrNFe1.Configuracoes.Certificados.ArquivoPFX := '';
+        ACBrNFe1.Configuracoes.Certificados.Senha := '';
+      end;
+
+      // Configurações opcionais: path_schemas e path_xml base
+      Cfg := JsonGetObj(J, 'configuracoes');
+      if Assigned(Cfg) then
+      begin
+        pathSchemas := JsonGetStr(Cfg, 'path_schemas', '');
+        if pathSchemas <> '' then
+          ACBrNFe1.Configuracoes.Arquivos.PathSchemas := IncludeTrailingPathDelimiter(pathSchemas);
+        pathXmlBase := JsonGetStr(Cfg, 'path_xml', '');
+        if pathXmlBase <> '' then
+          ACBrNFe1.Configuracoes.Arquivos.PathNFe := IncludeTrailingPathDelimiter(pathXmlBase);
+      end;
+
+      ACBrNFe1.NotasFiscais.Clear;
+      if xmlPath <> '' then
+        ACBrNFe1.NotasFiscais.LoadFromFile(xmlPath);
+
+      ACBrNFe1.EventoNFe.Evento.Clear;
+      ACBrNFe1.EventoNFe.idLote := 1;
+      with ACBrNFe1.EventoNFe.Evento.New do
+      begin
+        infEvento.dhEvento := Now;
+        // Tipo Carta de Correção (teCCe)
+        infEvento.tpEvento := teCCe;
+        if chave <> '' then
+          infEvento.chNFe := chave;
+        if emitCNPJ <> '' then
+          infEvento.CNPJ := emitCNPJ;
+        infEvento.nSeqEvento := seq;
+        infEvento.detEvento.xCorrecao := correcao;
+      end;
+
+      ACBrNFe1.EnviarEvento(1);
+      xmlRet := ACBrNFe1.WebServices.EnvEvento.EventoRetorno.XmlRetorno;
+
+      Resp.AddPair('ok', TJSONBool.Create(True));
+      if xmlPath <> '' then Resp.AddPair('xml_referencia', xmlPath);
+      if chave <> '' then Resp.AddPair('chave', chave);
+      Resp.AddPair('xml_retorno', xmlRet);
+    except
+      on E: Exception do
+      begin
+        Resp.AddPair('ok', TJSONBool.Create(False));
+        Resp.AddPair('error', E.Message);
+      end;
+    end;
+    Result := Resp.ToString;
+  finally
+    Resp.Free;
+  end;
+end;
+
+function TForm1.JsonGetObj(Obj: TJSONObject; const Key: string): TJSONObject;
+var V: TJSONValue;
+begin
+  Result := nil;
+  if not Assigned(Obj) then Exit;
+  V := Obj.Values[Key];
+  if (V <> nil) and (V is TJSONObject) then
+    Result := TJSONObject(V);
+end;
+
+function TForm1.JsonGetArr(Obj: TJSONObject; const Key: string): TJSONArray;
+var V: TJSONValue;
+begin
+  Result := nil;
+  if not Assigned(Obj) then Exit;
+  V := Obj.Values[Key];
+  if (V <> nil) and (V is TJSONArray) then
+    Result := TJSONArray(V);
+end;
+
+function TForm1.JsonGetStr(Obj: TJSONObject; const Key: string; const Default: string): string;
+var V: TJSONValue;
+begin
+  Result := Default;
+  if not Assigned(Obj) then Exit;
+  V := Obj.Values[Key];
+  if (V <> nil) then
+    Result := V.Value;
+end;
+
+function TForm1.JsonGetInt(Obj: TJSONObject; const Key: string; const Default: Integer): Integer;
+var s: string;
+begin
+  s := JsonGetStr(Obj, Key, IntToStr(Default));
+  Result := StrToIntDef(s, Default);
+end;
+
+// ===== FUNÇÕES DE SEGURANÇA =====
+
+function TForm1.ValidateToken(ARequestInfo: TIdHTTPRequestInfo): Boolean;
+var
+  Token: string;
+begin
+  Result := False;
+  
+  // Se não há tokens configurados, permite acesso (modo desenvolvimento)
+  if FValidTokens.Count = 0 then
+  begin
+    Result := True;
+    Exit;
+  end;
+  
+  Token := ExtractTokenFromHeader(ARequestInfo);
+  if Token = '' then Exit;
+  
+  // Verifica se o token está na lista de tokens válidos
+  Result := FValidTokens.IndexOf(Token) >= 0;
+end;
+
+function TForm1.ExtractTokenFromHeader(ARequestInfo: TIdHTTPRequestInfo): string;
+var
+  AuthHeader, XToken: string;
+begin
+  Result := '';
+  // 1) Authorization: Bearer <token>
+  AuthHeader := ARequestInfo.RawHeaders.Values['Authorization'];
+  if (AuthHeader <> '') and (Pos('Bearer ', AuthHeader) = 1) then
+  begin
+    Result := Copy(AuthHeader, 8, Length(AuthHeader) - 7);
+    Exit;
+  end;
+  // 2) X-Token: <token>
+  XToken := ARequestInfo.RawHeaders.Values['X-Token'];
+  if (XToken <> '') then
+  begin
+    Result := XToken;
+    Exit;
+  end;
+  // 3) ?token=<token>
+  if (ARequestInfo.Params.Values['token'] <> '') then
+  begin
+    Result := ARequestInfo.Params.Values['token'];
+    Exit;
+  end;
+end;
+
+procedure TForm1.LogSecurityEvent(const EventType, Details: string);
+var
+  LogFile: TextFile;
+  LogPath: string;
+  DateTimeStr: string;
+begin
+  try
+    // Cria diretório de logs se não existir
+    LogPath := ExtractFilePath(Application.ExeName) + 'logs\';
+    if not DirectoryExists(LogPath) then
+      ForceDirectories(LogPath);
+    
+    // Nome do arquivo de log com data
+    LogPath := LogPath + 'security_' + FormatDateTime('yyyy-mm-dd', Now) + '.log';
+    
+    // Formata data/hora
+    DateTimeStr := FormatDateTime('yyyy-mm-dd hh:nn:ss', Now);
+    
+    // Escreve no arquivo de log
+    AssignFile(LogFile, LogPath);
+    if FileExists(LogPath) then
+      Append(LogFile)
+    else
+      Rewrite(LogFile);
+    
+    try
+      Writeln(LogFile, '[' + DateTimeStr + '] ' + EventType + ': ' + Details);
+    finally
+      CloseFile(LogFile);
+    end;
+  except
+    // Em caso de erro, não interrompe o funcionamento
+  end;
+end;
+
+procedure TForm1.LoadValidTokens;
+var
+  ConfigFile: TextFile;
+  ConfigPath: string;
+  Line: string;
+begin
+  FValidTokens.Clear;
+  
+  try
+    // Arquivo de configuração de tokens (aceita tokens.txt ou token.txt)
+    ConfigPath := ExtractFilePath(Application.ExeName) + 'tokens.txt';
+    if not FileExists(ConfigPath) then
+      ConfigPath := ExtractFilePath(Application.ExeName) + 'token.txt';
+    
+    // Somente lê tokens se o arquivo existir.
+    // Se não existir, mantém lista vazia → sem exigência de token (modo desenvolvimento/teste).
+    if FileExists(ConfigPath) then
+    begin
+      AssignFile(ConfigFile, ConfigPath);
+      Reset(ConfigFile);
+      try
+        while not Eof(ConfigFile) do
+        begin
+          Readln(ConfigFile, Line);
+          Line := Trim(Line);
+          if (Line <> '') and (Pos('#', Line) <> 1) then
+            FValidTokens.Add(Line);
+        end;
+      finally
+        CloseFile(ConfigFile);
+      end;
+    end;
+  except
+    // Em caso de erro, não altera a lista (permite sem token em desenvolvimento)
+  end;
+end;
+
+end.

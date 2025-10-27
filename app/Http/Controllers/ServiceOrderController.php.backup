@@ -1,0 +1,1351 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\ServiceOrder;
+use App\Models\Client;
+use App\Models\Receivable;
+use App\Models\ServiceOrderItem;
+use App\Models\ServiceOrderAttachment;
+use App\Models\ServiceOrderStatusLog;
+use App\Models\ServiceOrderOccurrence;
+use App\Models\Product;
+use App\Models\User;
+use App\Models\SmtpConfig;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\URL;
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception as PHPMailerException;
+
+class ServiceOrderController extends Controller
+{
+    public function index(Request $request)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.view'), 403);
+        $tenantId = auth()->user()->tenant_id;
+        $query = ServiceOrder::where('tenant_id', $tenantId)->with('client')->withCount('attachments');
+
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+        if ($request->filled('warranty')) {
+            if ($request->warranty === 'in') {
+                $query->whereNotNull('warranty_until')->whereDate('warranty_until', '>=', now()->toDateString());
+            } elseif ($request->warranty === 'out') {
+                $query->where(function ($q) {
+                    $q->whereNull('warranty_until')
+                      ->orWhereDate('warranty_until', '<', now()->toDateString());
+                });
+            }
+        }
+        if ($request->filled('search')) {
+            $s = $request->search;
+            $query->where(function ($q) use ($s) {
+                $q->where('number', 'like', "%{$s}%")
+                  ->orWhere('title', 'like', "%{$s}%")
+                  ->orWhereHas('client', function ($qc) use ($s) {
+                      $qc->where('name', 'like', "%{$s}%");
+                  });
+            });
+        }
+
+        // Filtro por cliente
+        if ($request->filled('client_id')) {
+            $query->where('client_id', $request->client_id);
+        }
+
+        // Filtro por período (data de criação)
+        if ($request->filled('date_from')) {
+            $query->whereDate('created_at', '>=', $request->date_from);
+        }
+        if ($request->filled('date_to')) {
+            $query->whereDate('created_at', '<=', $request->date_to);
+        }
+
+        // Filtro por equipamento (marca/modelo/série/descrição do equipamento)
+        if ($request->filled('equipment')) {
+            $eq = $request->equipment;
+            $query->where(function ($q) use ($eq) {
+                $q->where('equipment_brand', 'like', "%{$eq}%")
+                  ->orWhere('equipment_model', 'like', "%{$eq}%")
+                  ->orWhere('equipment_serial', 'like', "%{$eq}%")
+                  ->orWhere('equipment_description', 'like', "%{$eq}%");
+            });
+        }
+
+        // Ordenação por número (crescente/decrescente) e paginação configurável
+        $numberOrder = $request->get('number_order'); // 'asc' | 'desc'
+        if (in_array($numberOrder, ['asc','desc'], true)) {
+            $query->orderByRaw('CAST(number AS UNSIGNED) ' . strtoupper($numberOrder));
+        } else {
+            $query->orderByDesc('id');
+        }
+
+        $perPage = (int) $request->get('per_page', 12);
+        if ($perPage < 5) { $perPage = 5; }
+        if ($perPage > 200) { $perPage = 200; }
+
+        $orders = $query->paginate($perPage)->appends($request->query());
+
+        // Resumos
+        $tenantId = auth()->user()->tenant_id;
+        $today = now()->toDateString();
+        $finishedToday = ServiceOrder::where('tenant_id', $tenantId)
+            ->where('status', 'finished')
+            ->whereDate('updated_at', $today);
+        $finishedTodayCount = (clone $finishedToday)->count();
+        $finishedTodayAmount = (clone $finishedToday)->sum('total_amount');
+
+        $openCount = ServiceOrder::where('tenant_id', $tenantId)->where('status', 'open')->count();
+        $inProgressCount = ServiceOrder::where('tenant_id', $tenantId)->where('status', 'in_progress')->count();
+        $finishedCount = ServiceOrder::where('tenant_id', $tenantId)->where('status', 'finished')->count();
+        $canceledCount = ServiceOrder::where('tenant_id', $tenantId)->where('status', 'canceled')->count();
+
+        // Financeiro do dia (recebidos hoje) — apenas OS
+        $receivedTodayAmount = Receivable::where('tenant_id', $tenantId)
+            ->whereNotNull('service_order_id')
+            ->where('status', 'paid')
+            ->whereDate('received_at', $today)
+            ->sum('amount');
+
+        $clients = Client::where('tenant_id', $tenantId)->orderBy('name')->get(['id','name']);
+
+        return view('service_orders.index', compact(
+            'orders',
+            'finishedTodayCount', 'finishedTodayAmount',
+            'openCount', 'inProgressCount', 'finishedCount', 'canceledCount',
+            'receivedTodayAmount', 'clients'
+        ));
+    }
+
+    public function create()
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.create'), 403);
+        $tenantId = auth()->user()->tenant_id;
+        $clients = Client::where('tenant_id', $tenantId)->orderBy('name')->get();
+        $products = Product::where('tenant_id', $tenantId)->where('active', 1)->orderBy('name')->get(['id','name','unit','price']);
+        $productsMap = $products->map(fn($p) => [
+            'id' => $p->id,
+            'name' => $p->name,
+            'unit' => $p->unit,
+            'price' => (float) $p->price,
+        ]);
+        $technicians = User::where('tenant_id', $tenantId)
+            ->whereHas('roles', fn($q) => $q->where('slug', 'technician'))
+            ->orderBy('name')->get(['id','name']);
+        return view('service_orders.create', compact('clients', 'productsMap', 'technicians'));
+    }
+
+    public function show(ServiceOrder $serviceOrder)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.view'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+        
+        // Carregar relacionamentos para auditoria
+        $serviceOrder->load(['client', 'createdBy', 'updatedBy', 'quotedBy', 'technician', 'attachments', 'items', 'receivables', 'statusLogs', 'occurrences.createdBy', 'deliveredBy', 'finalizedBy']);
+        
+        return view('service_orders.show', compact('serviceOrder'));
+    }
+
+    public function store(Request $request)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.create'), 403);
+        $tenantId = auth()->user()->tenant_id;
+
+        $validated = $request->validate([
+            'client_id' => 'required|exists:clients,id',
+            'number' => 'nullable|string|max:30',
+            'title' => 'required|string|max:255',
+            'description' => 'nullable|string',
+            // assistência técnica (opcional)
+            'equipment_brand' => 'nullable|string|max:100',
+            'equipment_model' => 'nullable|string|max:100',
+            'equipment_serial' => 'nullable|string|max:100',
+            'equipment_description' => 'nullable|string|max:255',
+            'defect_reported' => 'nullable|string',
+            'status' => 'required|in:open,in_progress,finished,canceled',
+            'total_amount' => 'nullable|numeric|min:0',
+            'discount_total' => 'nullable|numeric|min:0',
+            'addition_total' => 'nullable|numeric|min:0',
+            'warranty_days' => 'nullable|integer|min:0|max:3650',
+            'issue_nfse' => 'nullable|boolean',
+            'internal_notes' => 'nullable|string',
+            'technician_user_id' => 'nullable|exists:users,id',
+            // geração de parcelas
+            'installments' => 'nullable|integer|min:1|max:60',
+            'first_due_date' => 'nullable|date',
+            // itens
+            'items' => 'nullable|array',
+            'items.*.name' => 'nullable|string|max:255',
+            'items.*.description' => 'nullable|string|max:500',
+            'items.*.quantity' => 'nullable|numeric|min:0.001',
+            'items.*.unit' => 'nullable|string|max:10',
+            'items.*.unit_price' => 'nullable|numeric|min:0',
+            'items.*.discount_value' => 'nullable|numeric|min:0',
+            'items.*.addition_value' => 'nullable|numeric|min:0',
+            // fotos (até 10)
+            'photos' => 'nullable|array|max:10',
+            'photos.*' => 'file|image|mimes:jpg,jpeg,png,webp|max:5120',
+        ]);
+
+        $client = Client::findOrFail($validated['client_id']);
+        abort_unless($client->tenant_id === $tenantId, 403);
+        if (!empty($validated['technician_user_id'])) {
+            $tech = User::findOrFail($validated['technician_user_id']);
+            abort_unless($tech->tenant_id === $tenantId, 403);
+        }
+
+        // Preparar itens (se enviados) e calcular total
+        $itemsInput = $request->input('items', []);
+        $preparedItems = [];
+        $totalFromItems = 0.0;
+        $discountTotal = 0.0;
+        $additionTotal = 0.0;
+        if (is_array($itemsInput)) {
+            foreach ($itemsInput as $it) {
+                $name = trim($it['name'] ?? '');
+                $qty = isset($it['quantity']) ? (float)$it['quantity'] : null;
+                $unitPrice = isset($it['unit_price']) ? (float)$it['unit_price'] : null;
+                $discount = isset($it['discount_value']) ? (float)$it['discount_value'] : 0.0;
+                $addition = isset($it['addition_value']) ? (float)$it['addition_value'] : 0.0;
+                if ($name !== '' && $qty !== null && $unitPrice !== null) {
+                    $lineTotal = round(($qty * $unitPrice) - $discount + $addition, 2);
+                    $totalFromItems += $lineTotal;
+                    $discountTotal += $discount;
+                    $additionTotal += $addition;
+                    $preparedItems[] = [
+                        'name' => $name,
+                        'description' => $it['description'] ?? null,
+                        'quantity' => $qty,
+                        'unit' => $it['unit'] ?? null,
+                        'unit_price' => $unitPrice,
+                        'discount_value' => $discount,
+                        'addition_value' => $addition,
+                        'line_total' => $lineTotal,
+                    ];
+                }
+            }
+        }
+
+        // Gerar número automático se não informado
+        $number = $validated['number'] ?? null;
+        if (!$number) {
+            $last = ServiceOrder::where('tenant_id', $tenantId)
+                ->orderByRaw('CAST(number AS UNSIGNED) DESC')
+                ->first();
+            $lastNum = 0;
+            if ($last && is_numeric($last->number)) {
+                $lastNum = (int) $last->number;
+            }
+            $number = str_pad((string) ($lastNum + 1), 6, '0', STR_PAD_LEFT);
+        }
+
+        // Status inicial: sempre 'open' (Aguardando)
+        $status = 'open';
+
+        $defaultWarranty = (int) \App\Models\Setting::get('service_orders.default_warranty_days','90');
+        $order = ServiceOrder::create([
+            'tenant_id' => $tenantId,
+            'client_id' => $validated['client_id'],
+            'number' => $number,
+            'title' => $validated['title'],
+            'description' => $validated['description'] ?? null,
+            'equipment_brand' => $validated['equipment_brand'] ?? null,
+            'equipment_model' => $validated['equipment_model'] ?? null,
+            'equipment_serial' => $validated['equipment_serial'] ?? null,
+            'equipment_description' => $validated['equipment_description'] ?? null,
+            'defect_reported' => $validated['defect_reported'] ?? null,
+            'received_by_user_id' => auth()->id(),
+            'internal_notes' => $validated['internal_notes'] ?? null,
+            'technician_user_id' => $validated['technician_user_id'] ?? null,
+            'status' => $status,
+            'created_by' => auth()->id(),
+            'total_amount' => $totalFromItems > 0 ? $totalFromItems : ($validated['total_amount'] ?? 0),
+            'discount_total' => $totalFromItems > 0 ? $discountTotal : ($validated['discount_total'] ?? 0),
+            'addition_total' => $totalFromItems > 0 ? $additionTotal : ($validated['addition_total'] ?? 0),
+            'warranty_days' => $defaultWarranty,
+            'warranty_until' => null,
+            'issue_nfse' => (bool)($validated['issue_nfse'] ?? false),
+        ]);
+
+        // Salvar fotos (até 10)
+        $photos = $request->file('photos', []);
+        if (is_array($photos) && count($photos) > 0) {
+            $countSaved = 0;
+            foreach ($photos as $file) {
+                if ($countSaved >= 10) { break; }
+                if (!$file) { continue; }
+                $path = $file->store('service_orders/'.$order->id, 'public');
+                ServiceOrderAttachment::create([
+                    'tenant_id' => $tenantId,
+                    'service_order_id' => $order->id,
+                    'path' => $path,
+                    'original_name' => $file->getClientOriginalName(),
+                    'mime_type' => $file->getClientMimeType(),
+                    'size' => $file->getSize(),
+                ]);
+                $countSaved++;
+            }
+        }
+
+        // Persistir itens, se houver
+        if (!empty($preparedItems)) {
+            foreach ($preparedItems as $it) {
+                ServiceOrderItem::create([
+                    'tenant_id' => $tenantId,
+                    'service_order_id' => $order->id,
+                    'name' => $it['name'],
+                    'description' => $it['description'],
+                    'quantity' => $it['quantity'],
+                    'unit' => $it['unit'],
+                    'unit_price' => $it['unit_price'],
+                    'discount_value' => $it['discount_value'],
+                    'addition_value' => $it['addition_value'],
+                    'line_total' => $it['line_total'],
+                ]);
+            }
+        }
+
+        // gerar contas a receber parceladas (se solicitado)
+        if (!empty($validated['installments']) && !empty($validated['first_due_date'])) {
+            $num = (int) $validated['installments'];
+            $baseTotal = (float) ($order->total_amount);
+            $parcelAmount = $baseTotal / $num;
+            $due = \Carbon\Carbon::parse($validated['first_due_date']);
+            for ($i = 1; $i <= $num; $i++) {
+                Receivable::create([
+                    'tenant_id' => $tenantId,
+                    'client_id' => $validated['client_id'],
+                    'service_order_id' => $order->id,
+                    'description' => sprintf('OS %s - Parcela %d/%d', $validated['number'], $i, $num),
+                    'amount' => round($parcelAmount, 2),
+                    'due_date' => $due->copy()->addMonthsNoOverflow($i - 1)->toDateString(),
+                    'status' => 'open',
+                ]);
+            }
+        }
+
+        return redirect()->route('service_orders.index')->with('success', 'Ordem de serviço criada.');
+    }
+
+    public function edit(ServiceOrder $serviceOrder)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.edit'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+        $tenantId = auth()->user()->tenant_id;
+        $clients = Client::where('tenant_id', $tenantId)->orderBy('name')->get();
+        $technicians = User::where('tenant_id', $tenantId)->orderBy('name')->get(['id', 'name']);
+        $items = $serviceOrder->items()->orderBy('id')->get();
+        $attachments = $serviceOrder->attachments()->orderByDesc('id')->get();
+        $products = Product::where('tenant_id', $tenantId)->where('active', 1)->orderBy('name')->get(['id','name','unit','price']);
+        $productsMap = $products->map(fn($p) => [
+            'id' => $p->id,
+            'name' => $p->name,
+            'unit' => $p->unit,
+            'price' => (float) $p->price,
+        ]);
+        return view('service_orders.edit', [
+            'order' => $serviceOrder,
+            'clients' => $clients,
+            'items' => $items,
+            'attachments' => $attachments,
+            'productsMap' => $productsMap,
+            'technicians' => $technicians,
+        ]);
+    }
+
+    public function emailForm(ServiceOrder $serviceOrder)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.edit'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+        $client = $serviceOrder->client;
+        $templates = [
+            'approval_request' => [
+                'label' => 'Solicitar Aprovação (Orçamento)',
+                'subject' => 'OS #' . $serviceOrder->number . ' - Aprovação de orçamento',
+                'body' => view('service_orders.emails._approval_request', compact('serviceOrder','client'))->render(),
+            ],
+            'ready_for_pickup' => [
+                'label' => 'Pronto para retirada',
+                'subject' => 'OS #' . $serviceOrder->number . ' - Pronto para retirada',
+                'body' => view('service_orders.emails._ready_for_pickup', compact('serviceOrder','client'))->render(),
+            ],
+        ];
+        return view('service_orders.email', compact('serviceOrder','client','templates'));
+    }
+
+    public function sendEmail(Request $request, ServiceOrder $serviceOrder)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.edit'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+
+        $data = $request->validate([
+            'to' => 'required|email|max:255',
+            'subject' => 'required|string|max:255',
+            'body' => 'nullable|string',
+            'template' => 'nullable|in:approval_request,ready_for_pickup',
+        ], [
+            'to.required' => 'O campo email é obrigatório.',
+            'to.email' => 'Por favor, insira um email válido.',
+            'to.max' => 'O email não pode ter mais de 255 caracteres.',
+            'subject.required' => 'O campo assunto é obrigatório.',
+            'subject.max' => 'O assunto não pode ter mais de 255 caracteres.',
+            'template.in' => 'Template selecionado é inválido.',
+        ]);
+
+        $client = $serviceOrder->client;
+        
+        // Validar se o cliente tem email válido quando usando template
+        if (!empty($data['template']) && (empty($client->email) || !filter_var($client->email, FILTER_VALIDATE_EMAIL))) {
+            return back()->withErrors(['to' => 'O cliente não possui um email válido cadastrado. Verifique os dados do cliente.'])->withInput();
+        }
+        
+        $approvalToken = base64_encode(hash_hmac('sha256', 'so:' . $serviceOrder->id . ':' . now()->timestamp, config('app.key')));
+        $approveUrl = URL::temporarySignedRoute('service_orders.public_approve', now()->addHours(48), [
+            'service_order' => $serviceOrder->id,
+            'action' => 'approve',
+            'token' => $approvalToken,
+        ]);
+        $rejectUrl = URL::temporarySignedRoute('service_orders.public_approve', now()->addHours(48), [
+            'service_order' => $serviceOrder->id,
+            'action' => 'reject',
+            'token' => $approvalToken,
+        ]);
+
+        $subject = $data['subject'];
+        $body = (string) ($data['body'] ?? '');
+        if (($data['template'] ?? '') === 'approval_request') {
+            $body = view('service_orders.emails._approval_request', compact('serviceOrder','client','approveUrl','rejectUrl'))->render();
+            if (empty($subject)) { $subject = 'OS #' . $serviceOrder->number . ' - Aprovação de orçamento'; }
+        } elseif (($data['template'] ?? '') === 'ready_for_pickup') {
+            $body = view('service_orders.emails._ready_for_pickup', compact('serviceOrder','client'))->render();
+            if (empty($subject)) { $subject = 'OS #' . $serviceOrder->number . ' - Pronto para retirada'; }
+        }
+
+        // Envio via PHPMailer: usa config SMTP ativa salva no Admin (fallback para .env)
+        $active = SmtpConfig::where('is_active', true)->first();
+        
+        // Verificar se há configuração SMTP válida
+        if (!$active && !env('MAIL_HOST')) {
+            return back()->withErrors(['email' => 'Configuração SMTP não encontrada. Entre em contato com o administrador.'])->withInput();
+        }
+        
+        $host = (string) ($active->host ?? env('MAIL_HOST', '127.0.0.1'));
+        $port = (int) ($active->port ?? (int) env('MAIL_PORT', 2525));
+        $username = (string) ($active->username ?? env('MAIL_USERNAME'));
+        $password = (string) ($active->password ?? env('MAIL_PASSWORD'));
+        $encryption = strtolower((string) ($active->encryption ?? (env('MAIL_ENCRYPTION') ?: 'tls')));
+        $fromAddress = (string) ($active->from_address ?? env('MAIL_FROM_ADDRESS'));
+        $fromName = (string) ($active->from_name ?? (env('MAIL_FROM_NAME') ?: config('app.name')));
+
+        // Validar configurações essenciais
+        if (empty($host) || empty($fromAddress)) {
+            return back()->withErrors(['email' => 'Configuração SMTP incompleta. Verifique host e email remetente.'])->withInput();
+        }
+
+        $mailer = new PHPMailer(true);
+        try {
+            \App\Http\Controllers\Admin\EmailTestController::configureMailer(
+                $mailer,
+                $host,
+                $port,
+                $username,
+                $password,
+                $encryption,
+                $fromAddress,
+                $fromName
+            );
+            $mailer->addAddress($data['to']);
+            $mailer->isHTML(true);
+            $mailer->Subject = $subject;
+            $mailer->Body = $body;
+            $mailer->AltBody = strip_tags($body);
+            $mailer->send();
+        } catch (PHPMailerException $e) {
+            // Mensagens de erro mais amigáveis
+            $errorMessage = 'Erro ao enviar email. ';
+            
+            if (strpos($e->getMessage(), 'SMTP connect() failed') !== false) {
+                $errorMessage .= 'Não foi possível conectar ao servidor de email. Verifique as configurações SMTP.';
+            } elseif (strpos($e->getMessage(), 'Authentication failed') !== false) {
+                $errorMessage .= 'Falha na autenticação. Verifique usuário e senha SMTP.';
+            } elseif (strpos($e->getMessage(), 'Invalid address') !== false) {
+                $errorMessage .= 'Email de destino inválido.';
+            } elseif (strpos($e->getMessage(), 'timeout') !== false) {
+                $errorMessage .= 'Timeout na conexão. Tente novamente em alguns minutos.';
+            } else {
+                $errorMessage .= 'Erro interno. Tente novamente ou entre em contato com o suporte.';
+            }
+            
+            return back()->withErrors(['email' => $errorMessage])->withInput();
+        }
+
+        // Atualiza status de notificação
+        if (($data['template'] ?? '') === 'approval_request') {
+            $serviceOrder->update(['approval_status' => 'customer_notified']);
+        }
+
+        return redirect()->route('service_orders.show', $serviceOrder)->with('success', 'E-mail enviado com sucesso para ' . $data['to'] . '!');
+    }
+
+    // ===== MÉTODOS PARA OCORRÊNCIAS =====
+    
+    public function addOccurrence(Request $request, ServiceOrder $serviceOrder)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.edit'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+
+        $validated = $request->validate([
+            'occurrence_type' => 'required|in:client_contact,status_change,technical_note,warranty_issue,delivery_note,payment_note,other',
+            'description' => 'required|string|max:2000',
+            'priority' => 'required|in:low,medium,high,urgent',
+        ], [
+            'occurrence_type.required' => 'O tipo de ocorrência é obrigatório.',
+            'occurrence_type.in' => 'Tipo de ocorrência inválido.',
+            'description.required' => 'A descrição da ocorrência é obrigatória.',
+            'description.max' => 'A descrição não pode ter mais de 2000 caracteres.',
+            'priority.required' => 'A prioridade é obrigatória.',
+            'priority.in' => 'Prioridade inválida.',
+        ]);
+
+        // Converter checkbox para boolean (não validar, apenas converter)
+        $isInternal = $request->has('is_internal') && $request->input('is_internal') === 'on';
+
+        $occurrence = ServiceOrderOccurrence::create([
+            'service_order_id' => $serviceOrder->id,
+            'occurrence_type' => $validated['occurrence_type'],
+            'description' => $validated['description'],
+            'created_by' => auth()->id(),
+            'priority' => $validated['priority'],
+            'is_internal' => $isInternal,
+        ]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Ocorrência adicionada com sucesso!',
+            'occurrence' => [
+                'id' => $occurrence->id,
+                'type' => $occurrence->occurrence_type_name,
+                'description' => $occurrence->description,
+                'priority' => $occurrence->priority_name,
+                'priority_color' => $occurrence->priority_color,
+                'type_color' => $occurrence->type_color,
+                'is_internal' => $occurrence->is_internal,
+                'created_by' => $occurrence->createdBy->name,
+                'created_at' => $occurrence->created_at->format('d/m/Y H:i'),
+            ]
+        ]);
+    }
+
+    public function getOccurrences(ServiceOrder $serviceOrder)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.view'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+
+        $occurrences = $serviceOrder->occurrences()
+            ->with('createdBy')
+            ->orderBy('created_at', 'desc')
+            ->get()
+            ->map(function ($occurrence) {
+                return [
+                    'id' => $occurrence->id,
+                    'type' => $occurrence->occurrence_type_name,
+                    'description' => $occurrence->description,
+                    'priority' => $occurrence->priority_name,
+                    'priority_color' => $occurrence->priority_color,
+                    'type_color' => $occurrence->type_color,
+                    'is_internal' => $occurrence->is_internal,
+                    'created_by' => $occurrence->createdBy->name,
+                    'created_at' => $occurrence->created_at->format('d/m/Y H:i'),
+                ];
+            });
+
+        return response()->json([
+            'success' => true,
+            'occurrences' => $occurrences
+        ]);
+    }
+
+    // ===== MÉTODOS PARA FINALIZAÇÃO =====
+    
+    public function finalizeForm(ServiceOrder $serviceOrder)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.finalize'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+        
+        // Não permitir finalizar OS já finalizada
+        if ($serviceOrder->status === 'finished') {
+            return redirect()->route('service_orders.show', $serviceOrder)
+                ->with('error', 'Esta OS já foi finalizada.');
+        }
+        
+        // Carregar relacionamentos necessários
+        $serviceOrder->load(['client', 'items', 'technician', 'deliveredBy', 'finalizedBy']);
+        
+        // Carregar usuários para o select de entregador
+        $users = User::where('tenant_id', auth()->user()->tenant_id)
+            ->where('active', true)
+            ->orderBy('name')
+            ->get(['id', 'name']);
+        
+        return view('service_orders.finalize', compact('serviceOrder', 'users'));
+    }
+    
+    public function finalize(Request $request, ServiceOrder $serviceOrder)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.finalize'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+        
+        // Não permitir finalizar OS já finalizada
+        if ($serviceOrder->status === 'finished') {
+            return redirect()->route('service_orders.show', $serviceOrder)
+                ->with('error', 'Esta OS já foi finalizada.');
+        }
+        
+        $validated = $request->validate([
+            'finalization_date' => 'required|date|after_or_equal:' . $serviceOrder->created_at->format('Y-m-d'),
+            'finalization_notes' => 'nullable|string|max:2000',
+            'delivery_method' => 'required|in:pickup,delivery,shipping',
+            'delivered_by' => 'nullable|exists:users,id',
+            'client_signature' => 'nullable|string|max:500',
+            'equipment_condition' => 'required|in:perfect,good,damaged',
+            'accessories_included' => 'nullable|string|max:1000',
+            'final_amount' => 'required|numeric|min:0',
+            'payment_method' => 'required|in:cash,card,pix,transfer',
+            'payment_received' => 'boolean',
+        ], [
+            'finalization_date.required' => 'A data de finalização é obrigatória.',
+            'finalization_date.date' => 'A data de finalização deve ser uma data válida.',
+            'finalization_date.after_or_equal' => 'A data de finalização não pode ser anterior à data de criação da OS.',
+            'delivery_method.required' => 'O método de entrega é obrigatório.',
+            'delivery_method.in' => 'Método de entrega inválido.',
+            'delivered_by.exists' => 'O usuário selecionado não existe.',
+            'equipment_condition.required' => 'A condição do equipamento é obrigatória.',
+            'equipment_condition.in' => 'Condição do equipamento inválida.',
+            'final_amount.required' => 'O valor final é obrigatório.',
+            'final_amount.numeric' => 'O valor final deve ser um número válido.',
+            'final_amount.min' => 'O valor final não pode ser negativo.',
+            'payment_method.required' => 'O método de pagamento é obrigatório.',
+            'payment_method.in' => 'Método de pagamento inválido.',
+        ]);
+        
+        // Validar se o usuário entregador pertence ao mesmo tenant
+        if (!empty($validated['delivered_by'])) {
+            $deliveredBy = User::find($validated['delivered_by']);
+            abort_unless($deliveredBy && $deliveredBy->tenant_id === auth()->user()->tenant_id, 403);
+        }
+        
+        // Converter checkbox para boolean
+        $paymentReceived = $request->has('payment_received') && $request->input('payment_received') === 'on';
+        
+        // Atualizar OS com dados de finalização
+        $serviceOrder->update([
+            'status' => 'finished',
+            'finalization_date' => $validated['finalization_date'],
+            'finalization_notes' => $validated['finalization_notes'],
+            'delivery_method' => $validated['delivery_method'],
+            'delivered_by' => $validated['delivered_by'],
+            'client_signature' => $validated['client_signature'],
+            'equipment_condition' => $validated['equipment_condition'],
+            'accessories_included' => $validated['accessories_included'],
+            'final_amount' => $validated['final_amount'],
+            'payment_method' => $validated['payment_method'],
+            'payment_received' => $paymentReceived,
+            'finalized_by' => auth()->id(),
+            'finalized_at' => now(),
+        ]);
+        
+        // Registrar ocorrência de finalização
+        ServiceOrderOccurrence::create([
+            'service_order_id' => $serviceOrder->id,
+            'occurrence_type' => 'delivery_note',
+            'description' => 'OS finalizada e entregue. ' . ($validated['finalization_notes'] ?? ''),
+            'created_by' => auth()->id(),
+            'priority' => 'medium',
+            'is_internal' => false,
+        ]);
+        
+        return redirect()->route('service_orders.show', $serviceOrder)
+            ->with('success', 'OS finalizada com sucesso!');
+    }
+
+    public function publicApproval(Request $request, ServiceOrder $serviceOrder)
+    {
+        // Link assinado (signed route) já confere validade e integridade
+        if (!$request->hasValidSignature()) {
+            abort(401, 'Link inválido ou expirado');
+        }
+
+        $action = $request->query('action');
+        if (!in_array($action, ['approve','reject'], true)) {
+            abort(400, 'Ação inválida');
+        }
+
+        // Marcar aprovação/rejeição
+        if ($action === 'approve') {
+            $serviceOrder->approval_status = 'approved';
+            $serviceOrder->approved_at = now();
+            $serviceOrder->approved_by_email = $request->query('email');
+            $serviceOrder->approval_method = 'email';
+            $serviceOrder->save();
+            $message = 'Ordem de serviço aprovada com sucesso.';
+        } else {
+            $serviceOrder->approval_status = 'not_approved';
+            $serviceOrder->rejected_at = now();
+            $serviceOrder->rejected_by_email = $request->query('email');
+            $serviceOrder->rejection_method = 'email';
+            $serviceOrder->save();
+            $message = 'Ordem de serviço rejeitada.';
+        }
+
+        return view('service_orders.public-approval-result', [
+            'serviceOrder' => $serviceOrder,
+            'message' => $message,
+        ]);
+    }
+
+    public function update(Request $request, ServiceOrder $serviceOrder)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.edit'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+
+        $validated = $request->validate([
+            'client_id' => 'required|exists:clients,id',
+            // número é somente leitura; ignorado no update
+            'title' => 'required|string|max:255',
+            'description' => 'nullable|string',
+            // assistência técnica (opcional)
+            'equipment_brand' => 'nullable|string|max:100',
+            'equipment_model' => 'nullable|string|max:100',
+            'equipment_serial' => 'nullable|string|max:100',
+            'equipment_description' => 'nullable|string|max:255',
+            'defect_reported' => 'nullable|string',
+            'diagnosis' => 'nullable|string',
+            'budget_amount' => 'nullable|numeric|min:0',
+            'approval_notes' => 'nullable|string|max:255',
+            'status' => 'required|in:open,in_progress,in_service,warranty,service_finished,no_repair,finished,canceled',
+            'total_amount' => 'nullable|numeric|min:0',
+            'issue_nfse' => 'nullable|boolean',
+            'internal_notes' => 'nullable|string',
+            'technician_user_id' => 'nullable|exists:users,id',
+        ], [
+            'client_id.required' => 'Por favor, selecione um cliente.',
+            'client_id.exists' => 'O cliente selecionado não existe.',
+            'title.required' => 'O título da ordem de serviço é obrigatório.',
+            'title.max' => 'O título deve ter no máximo 255 caracteres.',
+            'status.required' => 'Por favor, selecione o status da ordem de serviço.',
+            'status.in' => 'O status selecionado não é válido.',
+            'technician_user_id.exists' => 'O técnico selecionado não existe.',
+            'budget_amount.numeric' => 'O valor do orçamento deve ser um número válido.',
+            'budget_amount.min' => 'O valor do orçamento não pode ser negativo.',
+            'total_amount.numeric' => 'O valor total deve ser um número válido.',
+            'total_amount.min' => 'O valor total não pode ser negativo.',
+        ]);
+
+        $client = Client::findOrFail($validated['client_id']);
+        abort_unless($client->tenant_id === auth()->user()->tenant_id, 403);
+
+        // Não permitir editar OS finalizada
+        if ($serviceOrder->status === 'finished') {
+            return back()->with('error','OS finalizada não pode ser editada.');
+        }
+
+        // Se enviado técnico, validar tenant
+        if (!empty($validated['technician_user_id'])) {
+            $tech = User::findOrFail($validated['technician_user_id']);
+            abort_unless($tech->tenant_id === auth()->user()->tenant_id, 403);
+        }
+
+        $updates = [
+            'client_id' => $validated['client_id'],
+            'title' => $validated['title'],
+            'description' => $validated['description'] ?? null,
+            'equipment_brand' => $validated['equipment_brand'] ?? $serviceOrder->equipment_brand,
+            'equipment_model' => $validated['equipment_model'] ?? $serviceOrder->equipment_model,
+            'equipment_serial' => $validated['equipment_serial'] ?? $serviceOrder->equipment_serial,
+            'equipment_description' => $validated['equipment_description'] ?? $serviceOrder->equipment_description,
+            'defect_reported' => $validated['defect_reported'] ?? $serviceOrder->defect_reported,
+            'diagnosis' => $validated['diagnosis'] ?? $serviceOrder->diagnosis,
+            'budget_amount' => $validated['budget_amount'] ?? $serviceOrder->budget_amount,
+            'approval_notes' => $validated['approval_notes'] ?? $serviceOrder->approval_notes,
+            'internal_notes' => $validated['internal_notes'] ?? $serviceOrder->internal_notes,
+            'technician_user_id' => $validated['technician_user_id'] ?? $serviceOrder->technician_user_id,
+            'status' => $validated['status'],
+            'total_amount' => $validated['total_amount'] ?? $serviceOrder->total_amount,
+            'issue_nfse' => (bool)($validated['issue_nfse'] ?? false),
+            'updated_by' => auth()->id(),
+        ];
+
+        // Permitir atualização do approval_status quando status exigir segundo seletor
+        if (in_array($updates['status'], ['in_progress','service_finished'], true)) {
+            $sec = (string) $request->input('approval_status', '');
+            // Aplicar defaults se vier vazio
+            if ($updates['status'] === 'in_progress' && $sec === '') { $sec = 'awaiting'; }
+            if ($updates['status'] === 'service_finished' && $sec === '') { $sec = 'customer_notified'; }
+            $updates['approval_status'] = $sec ?: 'awaiting';
+        } else {
+            // Para demais status, mantém um valor padrão para não violar NOT NULL
+            $updates['approval_status'] = 'awaiting';
+        }
+
+        // Sem reparo e Garantia: força total zero
+        if (in_array($updates['status'], ['no_repair','warranty'], true)) {
+            $updates['total_amount'] = 0;
+        }
+
+        // Não forçar mudança automática de status com base em diagnóstico/defeito no update
+
+        // Recalcula orçamento (budget) e total a partir dos itens
+        $itemsTotal = (float) $serviceOrder->items()->sum('line_total');
+        $updates['budget_amount'] = $itemsTotal;
+        
+        // Recalcula total_amount baseado nos itens se não foi fornecido explicitamente
+        if (!isset($validated['total_amount']) || $validated['total_amount'] === null) {
+            $updates['total_amount'] = $itemsTotal;
+        }
+        
+        // Registrar auditoria quando status mudar para "in_progress" (orçada)
+        if ($validated['status'] === 'in_progress' && $serviceOrder->status !== 'in_progress') {
+            $updates['quoted_by'] = auth()->id();
+            $updates['quoted_at'] = now();
+        }
+
+        // Registrar mudança de status no log
+        if ($validated['status'] !== $serviceOrder->status) {
+            ServiceOrderStatusLog::create([
+                'service_order_id' => $serviceOrder->id,
+                'old_status' => $serviceOrder->status,
+                'new_status' => $validated['status'],
+                'changed_by' => auth()->id(),
+                'changed_at' => now(),
+                'reason' => $request->input('status_change_reason')
+            ]);
+        }
+
+        try {
+        $serviceOrder->update($updates);
+            return redirect()->route('service_orders.index')->with('success', 'Ordem de serviço atualizada com sucesso!');
+        } catch (\Exception $e) {
+            \Log::error('Erro ao atualizar ordem de serviço', [
+                'service_order_id' => $serviceOrder->id,
+                'error' => $e->getMessage(),
+                'user_id' => auth()->id()
+            ]);
+            
+            return back()->with('error', 'Ocorreu um erro ao salvar a ordem de serviço. Tente novamente.')->withInput();
+        }
+    }
+
+    public function destroy(ServiceOrder $serviceOrder)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.delete'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+        if ($serviceOrder->status === 'finished') {
+            return back()->with('error','OS finalizada não pode ser excluída.');
+        }
+        $serviceOrder->delete();
+        return redirect()->route('service_orders.index')->with('success', 'Ordem de serviço excluída.');
+    }
+
+    public function print(ServiceOrder $serviceOrder)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.view'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+        $serviceOrder->load(['client', 'items', 'tenant']);
+        return view('service_orders.print', ['order' => $serviceOrder]);
+    }
+
+    public function finalize(ServiceOrder $serviceOrder, Request $request)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.finalize') || auth()->user()->hasPermission('service_orders.edit'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+
+        $data = $request->validate([
+            'finalize_action' => 'nullable|in:finish,finish_without_payment,cancel,reject',
+            'payment_mode' => 'nullable|in:immediate,installments',
+            'downpayment' => 'nullable|numeric|min:0',
+            'installments' => 'nullable|integer|min:1|max:60',
+            'first_due_date' => 'nullable|date',
+            'finalize_discount' => 'nullable|numeric|min:0',
+        ]);
+
+        // Evitar duplicidade de recebíveis da OS
+        $existing = Receivable::where('tenant_id', auth()->user()->tenant_id)
+            ->where('service_order_id', $serviceOrder->id)
+            ->exists();
+        if ($existing) {
+            return back()->with('error', 'Esta OS já possui lançamentos em Contas a Receber.');
+        }
+
+        $action = $data['finalize_action'] ?? 'finish';
+        $total = (float) $serviceOrder->total_amount - (float) ($data['finalize_discount'] ?? 0);
+        $down = (float) ($data['downpayment'] ?? 0);
+
+        if ($action === 'cancel') {
+            $serviceOrder->status = 'canceled';
+            $serviceOrder->finalized_at = now();
+            $serviceOrder->save();
+            return back()->with('success', 'OS cancelada.');
+        }
+
+        if ($action === 'reject') {
+            $serviceOrder->approval_status = 'not_approved';
+            $serviceOrder->finalized_at = now();
+            $serviceOrder->status = 'finished';
+            $serviceOrder->save();
+            return back()->with('success', 'OS marcada como não aprovada e finalizada.');
+        }
+
+        if ($action === 'finish_without_payment') {
+            $serviceOrder->status = 'finished';
+            $serviceOrder->finalized_at = now();
+            $serviceOrder->save();
+            return back()->with('success', 'OS finalizada sem geração de recebíveis.');
+        }
+
+        // finish (com geração de recebíveis) — só permitido se aprovado
+        if ($serviceOrder->approval_status !== 'approved') {
+            return back()->with('error', 'Para finalizar gerando recebíveis, a OS precisa estar Aprovada.');
+        }
+
+        // finish (com geração de recebíveis)
+        if (($data['payment_mode'] ?? null) === 'immediate') {
+            Receivable::create([
+                'tenant_id' => auth()->user()->tenant_id,
+                'client_id' => $serviceOrder->client_id,
+                'service_order_id' => $serviceOrder->id,
+                'description' => sprintf('OS %s - Pagamento à vista', $serviceOrder->number),
+                'amount' => round(max(0, $total), 2),
+                'due_date' => now()->toDateString(),
+                'status' => 'paid',
+                'received_at' => now(),
+                'payment_method' => 'cash',
+                'created_by' => auth()->id(),
+                'received_by' => auth()->id(),
+            ]);
+        } else {
+            $remaining = $total;
+            if ($down > 0) {
+                Receivable::create([
+                    'tenant_id' => auth()->user()->tenant_id,
+                    'client_id' => $serviceOrder->client_id,
+                    'service_order_id' => $serviceOrder->id,
+                    'description' => sprintf('OS %s - Entrada', $serviceOrder->number),
+                    'amount' => round($down, 2),
+                    'due_date' => now()->toDateString(),
+                    'status' => 'paid',
+                    'received_at' => now(),
+                    'payment_method' => 'cash',
+                    'created_by' => auth()->id(),
+                    'received_by' => auth()->id(),
+                ]);
+                $remaining = max(0, $total - $down);
+            }
+            $num = (int) ($data['installments'] ?? 0);
+            $firstDue = $data['first_due_date'] ?? now()->toDateString();
+            if ($num > 0 && $remaining > 0) {
+                $parcelAmount = $remaining / $num;
+                $due = \Carbon\Carbon::parse($firstDue);
+                for ($i = 1; $i <= $num; $i++) {
+                    Receivable::create([
+                        'tenant_id' => auth()->user()->tenant_id,
+                        'client_id' => $serviceOrder->client_id,
+                        'service_order_id' => $serviceOrder->id,
+                        'description' => sprintf('OS %s - Parcela %d/%d', $serviceOrder->number, $i, $num),
+                        'amount' => round($parcelAmount, 2),
+                        'due_date' => $due->copy()->addMonthsNoOverflow($i - 1)->toDateString(),
+                        'status' => 'open',
+                        'created_by' => auth()->id(),
+                    ]);
+                }
+            }
+        }
+
+        // Baixa automática de estoque para produtos cadastrados (não avulsos)
+        try {
+            $itemsWithProduct = $serviceOrder->items()->whereNotNull('product_id')->get();
+            foreach ($itemsWithProduct as $it) {
+                $product = \App\Models\Product::find($it->product_id);
+                // Só baixa estoque se for produto cadastrado e do tipo 'product'
+                if ($product && $product->type === 'product') {
+                \App\Models\StockMovement::create([
+                    'tenant_id' => auth()->user()->tenant_id,
+                    'product_id' => $it->product_id,
+                    'type' => 'exit',
+                    'quantity' => (float) $it->quantity,
+                    'unit_price' => (float) $it->unit_price,
+                    'document' => 'OS #'.$serviceOrder->number,
+                    'note' => 'Baixa por Finalização de OS',
+                ]);
+            }
+            }
+        } catch (\Throwable $e) {
+            \Log::warning('Falha na baixa automática de estoque ao finalizar OS', [
+                'service_order_id' => $serviceOrder->id, 
+                'error' => $e->getMessage()
+            ]);
+        }
+
+        // Ao finalizar, marcar para avisar cliente (customer_notified) e concluir como finished
+        $serviceOrder->approval_status = 'customer_notified';
+        $serviceOrder->status = 'finished';
+        $serviceOrder->finalized_at = now();
+        // Garantia: se não houver dias definidos, usa padrão das configurações
+        $warrantyDays = (int)($serviceOrder->warranty_days ?? 0);
+        if ($warrantyDays <= 0) {
+            $warrantyDays = (int) \App\Models\Setting::get('service_orders.default_warranty_days','90');
+            $serviceOrder->warranty_days = $warrantyDays;
+        }
+        $serviceOrder->warranty_until = now()->addDays($warrantyDays)->toDateString();
+        $serviceOrder->save();
+
+        return back()->with('success', 'OS finalizada e lançamentos gerados.');
+    }
+
+    public function finalizeForm(ServiceOrder $serviceOrder)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.finalize') || auth()->user()->hasPermission('service_orders.edit'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+        // Pode finalizar se: orçada (aprovada ou reprovada), serviço finalizado, sem reparo, garantia
+        $ok = in_array($serviceOrder->status, ['service_finished','no_repair','warranty','in_progress'], true);
+        if (!$ok) {
+            return redirect()->route('service_orders.edit', $serviceOrder)->with('error','Para finalizar, a OS precisa estar apta (Orçada/Serviço Finalizado/Sem Reparo/Garantia).');
+        }
+        return view('service_orders.finalize', [ 'order' => $serviceOrder ]);
+    }
+
+    public function addItem(ServiceOrder $serviceOrder, Request $request)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.edit'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+
+        $data = $request->validate([
+            'product_id' => 'nullable|exists:products,id',
+            'name' => 'required|string|max:255',
+            'description' => 'nullable|string|max:500',
+            'quantity' => 'required|numeric|min:0.001',
+            'unit' => 'nullable|string|max:10',
+            'unit_price' => 'required|numeric|min:0',
+            'discount_value' => 'nullable|numeric|min:0',
+        ]);
+
+        $lineTotal = round(($data['quantity'] * $data['unit_price']) - ($data['discount_value'] ?? 0), 2);
+        ServiceOrderItem::create([
+            'tenant_id' => auth()->user()->tenant_id,
+            'service_order_id' => $serviceOrder->id,
+            'product_id' => $data['product_id'] ?? null,
+            'name' => $data['name'],
+            'description' => $data['description'] ?? null,
+            'quantity' => $data['quantity'],
+            'unit' => $data['unit'] ?? null,
+            'unit_price' => $data['unit_price'],
+            'total_price' => $lineTotal,
+            'discount_value' => $data['discount_value'] ?? 0,
+            'line_total' => $lineTotal,
+        ]);
+
+        // Atualizar totais e status
+        $sum = (float) $serviceOrder->items()->sum('line_total');
+        $serviceOrder->budget_amount = $sum;
+        // Em garantia ou sem reparo: total sempre zero
+        if (in_array($serviceOrder->status, ['warranty','no_repair'], true)) {
+            $serviceOrder->total_amount = 0;
+        } else {
+            $serviceOrder->total_amount = $sum;
+        }
+        // Ao adicionar item, sair de "Em análise" para "Orçada"; não alterar quando estiver em Garantia
+        if ($serviceOrder->status === 'open') {
+            $serviceOrder->status = 'in_progress';
+        }
+        $serviceOrder->save();
+
+        if ($request->wantsJson()) {
+            return response()->json([
+                'ok' => true,
+                'item' => [
+                    'id' => $serviceOrder->items()->latest('id')->first()?->id,
+                    'name' => $data['name'],
+                    'quantity' => (int) $data['quantity'],
+                    'unit_price' => (float) $data['unit_price'],
+                    'line_total' => $lineTotal,
+                ],
+                'totals' => [
+                    'budget' => $serviceOrder->budget_amount,
+                    'total' => $serviceOrder->total_amount,
+                ],
+            ]);
+        }
+        return back()->with('success', 'Item adicionado.');
+    }
+
+    public function removeItem(ServiceOrder $serviceOrder, ServiceOrderItem $item, Request $request)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.edit'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id && $item->service_order_id === $serviceOrder->id, 403);
+
+        $item->delete();
+        $sum = (float) $serviceOrder->items()->sum('line_total');
+        $serviceOrder->budget_amount = $sum;
+        if (in_array($serviceOrder->status, ['warranty','no_repair'], true)) {
+            $serviceOrder->total_amount = 0;
+        } else {
+            $serviceOrder->total_amount = $sum;
+        }
+        $serviceOrder->save();
+        if ($request->wantsJson()) {
+            return response()->json([
+                'ok' => true,
+                'totals' => [
+                    'budget' => $serviceOrder->budget_amount,
+                    'total' => $serviceOrder->total_amount,
+                ],
+            ]);
+        }
+        return back()->with('success', 'Item removido.');
+    }
+
+    public function addAttachment(ServiceOrder $serviceOrder, Request $request)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.edit'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+
+        $request->validate([
+            'file' => 'required|file|max:10240',
+        ]);
+
+        $file = $request->file('file');
+        // Limitar a 10 fotos (imagens) por OS
+        if (str_starts_with((string)$file->getMimeType(), 'image/')) {
+            $imageCount = ServiceOrderAttachment::where('tenant_id', auth()->user()->tenant_id)
+                ->where('service_order_id', $serviceOrder->id)
+                ->where('mime_type', 'like', 'image/%')
+                ->count();
+            if ($imageCount >= 10) {
+                return back()->with('error', 'Limite de 10 fotos por OS atingido.');
+            }
+        }
+        $path = $file->store('service_orders/'. $serviceOrder->id, 'public');
+
+        ServiceOrderAttachment::create([
+            'tenant_id' => auth()->user()->tenant_id,
+            'service_order_id' => $serviceOrder->id,
+            'path' => $path,
+            'original_name' => $file->getClientOriginalName(),
+            'mime_type' => $file->getClientMimeType(),
+            'size' => $file->getSize(),
+        ]);
+
+        return back()->with('success', 'Anexo adicionado.');
+    }
+
+    public function removeAttachment(ServiceOrder $serviceOrder, ServiceOrderAttachment $attachment)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.edit'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id && $attachment->service_order_id === $serviceOrder->id, 403);
+
+        // Remover arquivo físico (se existir)
+        try { \Storage::disk('public')->delete($attachment->path); } catch (\Throwable $e) {}
+        $attachment->delete();
+        return back()->with('success', 'Anexo removido.');
+    }
+
+    public function approve(ServiceOrder $serviceOrder, Request $request)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.approve'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+        // Só pode aprovar se a OS estiver orçada (in_progress)
+        if ($serviceOrder->status !== 'in_progress') {
+            return back()->with('error', 'Para aprovar, a OS precisa estar com status Orçada.');
+        }
+        $data = $request->validate([
+            'approval_notes' => 'nullable|string|max:255',
+        ]);
+        $serviceOrder->approval_status = 'approved';
+        $serviceOrder->approved_at = now();
+        if (isset($data['approval_notes'])) { $serviceOrder->approval_notes = $data['approval_notes']; }
+        $serviceOrder->save();
+        return back()->with('success', 'OS aprovada.');
+    }
+
+    public function notify(ServiceOrder $serviceOrder, Request $request)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.notify'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+        $data = $request->validate([
+            'approval_notes' => 'nullable|string|max:255',
+        ]);
+        $serviceOrder->approval_status = 'customer_notified';
+        $serviceOrder->notified_at = now();
+        if (isset($data['approval_notes'])) { $serviceOrder->approval_notes = $data['approval_notes']; }
+        $serviceOrder->save();
+        return back()->with('success', 'Cliente marcado como avisado.');
+    }
+
+    public function reject(ServiceOrder $serviceOrder, Request $request)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.reject'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+        // Só pode marcar como não aprovada se estiver orçada
+        if ($serviceOrder->status !== 'in_progress') {
+            return back()->with('error', 'Para marcar como não aprovada, a OS precisa estar com status Orçada.');
+        }
+        $data = $request->validate([
+            'approval_notes' => 'nullable|string|max:255',
+        ]);
+        $serviceOrder->approval_status = 'not_approved';
+        $serviceOrder->not_approved_at = now();
+        if (isset($data['approval_notes'])) { $serviceOrder->approval_notes = $data['approval_notes']; }
+        $serviceOrder->save();
+        return back()->with('success', 'OS marcada como não aprovada.');
+    }
+
+    public function issueNfe(ServiceOrder $serviceOrder, Request $request)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.edit'), 403);
+        abort_unless(auth()->user()->hasPermission('nfe.emit'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+        
+        if ($serviceOrder->status !== 'finished') {
+            return back()->with('error', 'Para emitir NF-e, a OS precisa estar Finalizada.');
+        }
+
+        // Verificar se o emissor Delphi está disponível
+        $nfeService = app(\App\Services\NFeService::class);
+        if (!$nfeService->verificarDisponibilidade()) {
+            return back()->with('error', 'Emissor de notas fiscais não está disponível. Verifique se o aplicativo está rodando.');
+        }
+
+        try {
+            // Preparar dados para emissão
+            $dados = [
+                'tipo' => 'nfe',
+                'numero_os' => $serviceOrder->number,
+                'cliente' => $nfeService->prepararDadosCliente($serviceOrder->client),
+                'produtos' => $nfeService->prepararDadosProdutos($serviceOrder->items),
+                'configuracoes' => [
+                    'cfop' => '5102', // CFOP para venda
+                    'ambiente' => (string) (\App\Models\Setting::get('nfe.environment', \App\Models\Setting::getGlobal('services.delphi.environment', (config('app.env') === 'production' ? 'producao' : 'homologacao')))),
+                    'serie' => '1'
+                ]
+            ];
+
+            // Emitir NFe
+            $resultado = $nfeService->emitirNFe($dados);
+
+            if ($resultado['success']) {
+                // Marcar como emitida
+                $serviceOrder->nfe_issued_at = now();
+                $serviceOrder->nfe_number = $resultado['data']['numero'] ?? null;
+                $serviceOrder->save();
+
+                return back()->with('success', 'NF-e emitida com sucesso! Número: ' . ($resultado['data']['numero'] ?? 'N/A'));
+            } else {
+                return back()->with('error', 'Erro ao emitir NF-e: ' . $resultado['error']);
+            }
+
+        } catch (\Exception $e) {
+            \Log::error('Erro ao emitir NFe da OS', [
+                'os_id' => $serviceOrder->id,
+                'error' => $e->getMessage()
+            ]);
+            
+            return back()->with('error', 'Erro interno ao emitir NF-e. Tente novamente.');
+        }
+    }
+
+    public function issueNfse(ServiceOrder $serviceOrder, Request $request)
+    {
+        abort_unless(auth()->user()->hasPermission('service_orders.edit'), 403);
+        abort_unless($serviceOrder->tenant_id === auth()->user()->tenant_id, 403);
+        
+        if ($serviceOrder->status !== 'finished') {
+            return back()->with('error', 'Para emitir NFS-e, a OS precisa estar Finalizada.');
+        }
+
+        // Verificar se o emissor Delphi está disponível
+        $nfeService = app(\App\Services\NFeService::class);
+        if (!$nfeService->verificarDisponibilidade()) {
+            return back()->with('error', 'Emissor de notas fiscais não está disponível. Verifique se o aplicativo está rodando.');
+        }
+
+        try {
+            // Montagem mínima para NFSe (prestador, tomador, rps, servico)
+            $tenantId = auth()->user()->tenant_id;
+            $emitter = \App\Models\TenantEmitter::where('tenant_id', $tenantId)->first();
+            
+            // Obter certificado selecionado (número de série)
+            $certificateSerial = \App\Models\Setting::get('nfe.certificate_serial');
+            $client = $serviceOrder->client;
+            $valorServico = (float) $serviceOrder->items()->sum('line_total');
+            $discriminacao = $serviceOrder->items->map(fn($i)=>$i->name)->implode(', ');
+
+            $payload = [
+                // Certificado instalado (compat)
+                'cert' => [
+                    'serial' => $certificateSerial,
+                ],
+                'prestador' => [
+                    'cnpj' => $emitter?->cnpj,
+                    'razao_social' => $emitter?->razao_social,
+                    'nome_fantasia' => $emitter?->nome_fantasia,
+                    'inscricao_estadual' => $emitter?->ie,
+                    'inscricao_municipal' => $emitter?->im,
+                    'endereco' => $emitter?->address,
+                    'numero' => $emitter?->number,
+                    'complemento' => $emitter?->complement,
+                    'bairro' => $emitter?->neighborhood,
+                    'municipio' => $emitter?->city,
+                    'uf' => $emitter?->state,
+                    'cep' => $emitter?->zip_code,
+                    'telefone' => $emitter?->phone,
+                    'email' => $emitter?->email,
+                    'codigo_municipio' => (int) $emitter?->codigo_ibge,
+                    'certificate_serial' => $certificateSerial, // Número de série do certificado selecionado
+                ],
+                'tomador' => [
+                    'cpf_cnpj' => $client?->cpf_cnpj,
+                    'razao_social' => $client?->name,
+                    'municipio' => $client?->city,
+                    'uf' => $client?->state,
+                ],
+                'rps' => [
+                    'numero' => (string) $serviceOrder->number,
+                    'serie' => '1',
+                    'tipo' => 1,
+                ],
+                'servico' => [
+                    'codigo_servico' => '0000',
+                    'discriminacao' => $discriminacao,
+                    'valor_servico' => round($valorServico, 2),
+                    'aliquota' => 0,
+                    'iss_retido' => false,
+                ],
+            ];
+
+            // Emitir NFSe via serviço dedicado
+            $nfseService = app(\App\Services\NFSeService::class);
+            $resultado = $nfseService->emitir($payload);
+
+            if ($resultado['success']) {
+                // Marcar como emitida
+                $serviceOrder->nfse_issued_at = now();
+                $serviceOrder->nfse_number = $resultado['data']['numero'] ?? ($serviceOrder->number ?? null);
+                $serviceOrder->save();
+
+                return back()->with('success', 'NFS-e emitida com sucesso! Número: ' . ($resultado['data']['numero'] ?? 'N/A'));
+            } else {
+                return back()->with('error', 'Erro ao emitir NFS-e: ' . $resultado['error']);
+            }
+
+        } catch (\Exception $e) {
+            \Log::error('Erro ao emitir NFSe da OS', [
+                'os_id' => $serviceOrder->id,
+                'error' => $e->getMessage()
+            ]);
+            
+            return back()->with('error', 'Erro interno ao emitir NFS-e. Tente novamente.');
+        }
+    }
+}
+
+

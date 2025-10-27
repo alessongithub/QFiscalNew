@@ -1,0 +1,802 @@
+unit unit_consulta_nfe;
+
+interface
+
+uses
+  Winapi.Windows, Winapi.Messages, System.SysUtils, System.Variants, System.Classes, Vcl.Graphics,
+  Vcl.Controls, Vcl.Forms, Vcl.Dialogs, Data.DB, Vcl.Grids, Vcl.DBGrids,
+  Vcl.StdCtrls, Vcl.Buttons, Vcl.ExtCtrls, FireDAC.Comp.Client, Vcl.Mask,
+  ACBrDFeReport, ACBrDFeDANFeReport, ACBrNFeDANFEClass, ACBrNFeDANFeRLClass,
+  ACBrBase, ACBrDFe, ACBrNFe, ACBrMail, unit_consulta_inutilizacao_nfe,
+  pcnConversao;
+
+type
+  Tform_consulta_nfe = class(TForm)
+    pnl_principal: TPanel;
+    pnl_cabecalho: TPanel;
+    btn_fechar: TSpeedButton;
+    pnl_separa_topo: TPanel;
+    pnl_Rodape: TPanel;
+    lbl_duplo_clique: TLabel;
+    lbl_excluir: TLabel;
+    pnl_pesquisa: TPanel;
+    lbl_texto: TLabel;
+    edt_consulta: TEdit;
+    pnl_dbgrid: TPanel;
+    dbg_registros: TDBGrid;
+    ds_consulta: TDataSource;
+    lbl_titulo: TLabel;
+    btn_consulta_emissor: TBitBtn;
+    Label2: TLabel;
+    edt_inicio: TMaskEdit;
+    edt_fim: TMaskEdit;
+    Label3: TLabel;
+    btn_Criar: TButton;
+    Label4: TLabel;
+    btn_Transmitir: TButton;
+    btn_Imprimir: TButton;
+    btn_Enviar: TButton;
+    btn_Cancelar: TButton;
+    btn_Inutilizar: TButton;
+    btn_CartaCorrecao: TButton;
+    pnlEmissor: TPanel;
+    lbl_emissor: TLabel;
+    Panel2: TPanel;
+    NFeDANFe: TACBrNFeDANFeRL;
+    Email: TACBrMail;
+    OpenDialog: TOpenDialog;
+    NFe: TACBrNFe;
+    lbl_regime: TLabel;
+    cmb_tipoImpressao: TComboBox;
+    btn_relatorio: TButton;
+    procedure btn_fecharClick(Sender: TObject);
+    procedure btn_inserirClick(Sender: TObject);
+    procedure dbg_registrosDrawColumnCell(Sender: TObject; const Rect: TRect;
+      DataCol: Integer; Column: TColumn; State: TGridDrawState);
+    procedure dbg_registrosKeyDown(Sender: TObject; var Key: Word;
+      Shift: TShiftState);
+    procedure edt_consultaKeyDown(Sender: TObject; var Key: Word;
+      Shift: TShiftState);
+    procedure FormClose(Sender: TObject; var Action: TCloseAction);
+    procedure dbg_registrosTitleClick(Column: TColumn);
+    procedure FormCreate(Sender: TObject);
+    procedure dbg_registrosDblClick(Sender: TObject);
+    procedure FormShow(Sender: TObject);
+    procedure btn_consulta_emissorClick(Sender: TObject);
+    procedure CarregarParametrosEdits;
+    procedure edt_inicioExit(Sender: TObject);
+    procedure btn_ImprimirClick(Sender: TObject);
+    procedure ds_consultaDataChange(Sender: TObject; Field: TField);
+    procedure btn_EnviarClick(Sender: TObject);
+    procedure btn_InutilizarClick(Sender: TObject);
+    procedure btn_CancelarClick(Sender: TObject);
+    procedure btn_CartaCorrecaoClick(Sender: TObject);
+    procedure btn_TransmitirClick(Sender: TObject);
+    procedure btn_relatorioClick(Sender: TObject);
+  private
+    { Private declarations }
+    sSQL : TStrings;
+    NomeCampo : String;
+    TipoCampo : TFieldType;
+  public
+    sTipoOperacao: String;
+    { Public declarations }
+  end;
+
+var
+  form_consulta_nfe: Tform_consulta_nfe;
+
+implementation
+
+{$R *.dfm}
+
+uses unit_funcoes, unit_consulta_emissor, unit_cadastro_nfe,
+  unit_conexao_nfe, unit_funcoes_nfe, unit_cadastro_nfe_data_emissao_nro,
+  unit_relatorio_notas;
+
+procedure Tform_consulta_nfe.btn_EnviarClick(Sender: TObject);
+var
+  CC,
+  Mensagem: Tstrings;
+  Para: String;
+
+begin
+  if CriarMensagem('CONFIRMAÇÃO','Deseja enviar os arquivos dessa Nota fiscal por email?') then
+  begin
+    NFe.NotasFiscais.Clear;
+    NFe.NotasFiscais.LoadFromFile( ds_consulta.DataSet.FieldByName('DS_ARQUIVO_XML').AsString );
+
+    CC       := TStringList.Create;
+    Mensagem :=  TStringList.Create;
+
+    try
+      //CC.Add('email_1@provedor.com');   // especifique um email valido
+      //CC.Add('email_2@provedor.com.br');// especifique um email valido
+
+      eMail.From      := form_conexao_nfe.qryDadosEmissor.FieldByName('DS_EMAILENVIOXML').asString; //EMAIL DE ENVIO DO EMISSOR
+      eMail.Host      := form_conexao_nfe.qryDadosEmissor.FieldByName('DS_SERVIDORSMTP').asString;
+      eMail.Port      := form_conexao_nfe.qryDadosEmissor.FieldByName('NR_PORTA').asString;
+      eMail.Username  := form_conexao_nfe.qryDadosEmissor.FieldByName('DS_USUARIO').asString;
+      eMail.Password  := form_conexao_nfe.qryDadosEmissor.FieldByName('DS_SENHA').asString;
+      eMail.SetSSL    := form_conexao_nfe.qryDadosEmissor.FieldByName('FG_SSL').asString = 'SIM';
+      eMail.SetTLS    := form_conexao_nfe.qryDadosEmissor.FieldByName('FG_TLS').asString = 'SIM';
+      eMail.FromName  := form_conexao_nfe.qryDadosEmissor.FieldByName('DS_FANTASIA').asString; //NOME DE QUEM ESTA ENVIANDO
+      eMail.ReadingConfirmation := False;
+      eMail.UseThread           := False;
+
+      Para := RetornaEmailDestinatario ( ds_consulta.DataSet.FieldByName('CD_PESSOA').AsInteger );
+      Mensagem.Add( form_conexao_nfe.qryDadosEmissor.FieldByName('DS_MENSAGEMEMAIL').AsString );
+
+      if not(InputQuery('Enviar Email', 'Email de destino', Para)) then
+        exit;
+
+      NFe.NotasFiscais.Items[0].EnviarEmail( Para,
+                                             form_conexao_nfe.qryDadosEmissor.FieldByName('DS_ASSUNTO').AsString,
+                                             Mensagem,
+                                             True,  // Enviar PDF junto
+                                             CC,    // Lista com emails que serao enviado copias - TStrings
+                                             nil // Lista de anexos - TStrings
+                                            );
+
+      //salvando o ultimo endereco de email enviado
+      ds_consulta.DataSet.Edit;
+      ds_consulta.DataSet.FieldByName('DS_EMAIL_ENVIADO').AsString := Para;
+      ds_consulta.DataSet.Post;
+
+    finally
+      CC.Free;
+      Mensagem.Free;
+      Para:= '';
+    end;
+
+    CriarMensagem('AVISO', 'EMAIL ENVIADO COM SUCESSO!');
+  end;
+end;
+
+procedure Tform_consulta_nfe.btn_fecharClick(Sender: TObject);
+begin
+  //FECHA O FORM
+  Self.Close;
+end;
+
+procedure Tform_consulta_nfe.btn_ImprimirClick(Sender: TObject);
+begin
+  {//abrindo um arquivo aleatorio para impressao
+  OpenDialog.Title := 'Selecione a NFe';
+  OpenDialog.DefaultExt := '*-nfe.XML';
+  OpenDialog.Filter := 'Arquivos NFe (*-nfe.XML)|*-nfe.XML|Arquivos XML (*.XML)|*.XML|Todos os Arquivos (*.*)|*.*';
+
+  OpenDialog.InitialDir := NFe.Configuracoes.Arquivos.PathSalvar;
+
+  if OpenDialog1.Execute then
+  begin
+    ACBrNFe1.NotasFiscais.Clear;
+    ACBrNFe1.NotasFiscais.LoadFromFile(OpenDialog1.FileName);
+    ACBrNFe1.NotasFiscais.Imprimir;
+  end;  }
+
+  //tipo de danfe
+  Case cmb_tipoImpressao.ItemIndex of
+    0: NFe.DANFE.TipoDANFE := tiRetrato;
+    1: NFe.DANFE.TipoDANFE := tiPaisagem;
+    2: NFe.DANFE.TipoDANFE := tiSimplificado;
+  end;
+
+  NFe.NotasFiscais.Clear;
+  NFe.NotasFiscais.LoadFromFile( ds_consulta.DataSet.FieldByName('DS_ARQUIVO_XML').AsString );
+  NFe.NotasFiscais.Imprimir;
+end;
+
+procedure Tform_consulta_nfe.btn_inserirClick(Sender: TObject);
+begin
+  ID_PESSOA        := 0;
+  CD_TRANSPORTADORA:= 0;
+  CD_TIPONOTA      := 0;
+  ID_PRODUTO       := 0;
+
+  //so abre o gerar notas caso o emissor esteja selecionado
+  if CD_EMISSOR > 0  then
+  begin
+
+    //ATRIBUI A OPERACAO DE INSERCAO PARA A VARIAVEL
+    sTipoOperacao :=  'INSERIR';
+
+    //cria o formulario de cadastro
+    form_cadastro_nfe := Tform_cadastro_nfe.Create (Self);
+
+    FG_STATUS := 'CRIADA';
+
+    form_cadastro_nfe.Show;
+
+  end else
+  begin
+    CriarMensagem('ERRO','Selecione um Emissor para poder CRIAR NOVAS Notas Fiscais.');
+    Abort;
+  end;
+
+end;
+
+procedure Tform_consulta_nfe.btn_InutilizarClick(Sender: TObject);
+begin
+  form_consulta_inutilizacao_nfe := Tform_consulta_inutilizacao_nfe.Create( Self );
+  form_consulta_inutilizacao_nfe.Show;
+end;
+
+procedure Tform_consulta_nfe.btn_relatorioClick(Sender: TObject);
+begin
+  //chama a janela do relatorio de notas
+  IF CD_EMISSOR > 0 THEN
+  BEGIN
+    form_relatorio_notas := Tform_relatorio_notas.Create( Self );
+    form_relatorio_notas.ShowModal;
+  END else
+  begin
+    CriarMensagem('ERRO','Selecione um Emissor para poder Gerar Relatórios de Notas Fiscais.');
+    Abort;
+  end;
+end;
+
+procedure Tform_consulta_nfe.btn_TransmitirClick(Sender: TObject);
+begin
+  //verificar data de emissao e saída e numero da nota
+  form_cadastro_nfe_data_emissao_nro := Tform_cadastro_nfe_data_emissao_nro.Create( Self );
+  form_cadastro_nfe_data_emissao_nro.ShowModal;
+end;
+
+procedure Tform_consulta_nfe.CarregarParametrosEdits;
+begin
+  with form_cadastro_nfe do
+  begin
+    FG_STATUS :=  ds_consulta.DataSet.FieldByName('FG_STATUS').AsString;
+
+    //esses campos so podem ser atribuido em definitivo quando a nota for assinada, validada e enviada
+    //ds_consulta.DataSet.FieldByName('CD_NFE').AsInteger
+    //ds_consulta.DataSet.FieldByName('NR_NFE').AsInteger
+
+    edt_serie.text        :=  ds_consulta.DataSet.FieldByName('NR_SERIE').AsString;
+    edt_modelo.text       :=  ds_consulta.DataSet.FieldByName('NR_MODELO').AsString;
+    edt_data_saida.text   :=  ds_consulta.DataSet.FieldByName('DT_SAIDA').AsString;
+    edt_data_emissao.text :=  ds_consulta.DataSet.FieldByName('DT_EMISSAO').AsString;
+    edt_hora.Text         :=  ds_consulta.DataSet.FieldByName('HR_SAIDA').AsString;
+
+    //ENTRADA OU SAÍDA
+    if ds_consulta.DataSet.FieldByName('FG_TIPO').AsString = 'SAÍDA' then
+      cmb_TipoNota.ItemIndex := 0
+    else if ds_consulta.DataSet.FieldByName('FG_TIPO').AsString = 'ENTRADA' then
+      cmb_TipoNota.ItemIndex := 1;
+
+    //o cfop e tipo de nota recebe o valor do registro selecionado
+    CD_TIPONOTA             := ds_consulta.DataSet.FieldByName('CD_TIPONOTA').AsInteger;
+    edt_cfop.Text           := ds_consulta.DataSet.FieldByName('CD_CFOP').AsString;
+    edt_tipo_nota_cfop.Text := ds_consulta.DataSet.FieldByName('DS_TIPONOTA').AsString;
+
+    //tipo da operação
+    if ds_consulta.DataSet.FieldByName('FG_TIPOOPERACAO').AsString = 'INTERNA' then
+      cmb_operacao.ItemIndex   := 0
+    else if ds_consulta.DataSet.FieldByName('FG_TIPOOPERACAO').AsString = 'INTERESTADUAL' then
+      cmb_operacao.ItemIndex   := 1
+    else  if ds_consulta.DataSet.FieldByName('FG_TIPOOPERACAO').AsString = 'EXTERIOR' then
+      cmb_operacao.ItemIndex   := 2;
+
+    //forma de pagamento
+    if ds_consulta.DataSet.FieldByName('FG_PAGAMENTO').AsString = 'Á VISTA'  then
+      cmb_formaPGTO.ItemIndex  := 0
+    else if ds_consulta.DataSet.FieldByName('FG_PAGAMENTO').AsString = 'Á PRAZO'  then
+      cmb_formaPGTO.ItemIndex  := 1
+    else if ds_consulta.DataSet.FieldByName('FG_PAGAMENTO').AsString = 'OUTROS'  then
+      cmb_formaPGTO.ItemIndex  := 2
+    else if ds_consulta.DataSet.FieldByName('FG_PAGAMENTO').AsString = 'NENHUM'  then
+      cmb_formaPGTO.ItemIndex  := 3;
+
+    //tipo de emissao da nota
+    if ds_consulta.DataSet.FieldByName('FG_TIPOEMISSAO').AsString = 'NORMAL'  then
+      cmb_tipoEmissao.ItemIndex := 0
+    else if ds_consulta.DataSet.FieldByName('FG_TIPOEMISSAO').AsString = 'CONTINGENCIA'  then
+      cmb_tipoEmissao.ItemIndex := 1
+    else if ds_consulta.DataSet.FieldByName('FG_TIPOEMISSAO').AsString = 'OFFLINE'  then
+      cmb_tipoEmissao.ItemIndex := 2;
+
+    //finalidade da emissao dessa nota
+    if ds_consulta.DataSet.FieldByName('FG_FINALIDADE').AsString = 'NORMAL'  then
+      cmb_finalidade.ItemIndex  := 0
+    else if ds_consulta.DataSet.FieldByName('FG_FINALIDADE').AsString = 'DEVOLUÇÃO'  then
+      cmb_finalidade.ItemIndex  := 1
+    else if ds_consulta.DataSet.FieldByName('FG_FINALIDADE').AsString = 'COMPLEMENTAR'  then
+      cmb_finalidade.ItemIndex  := 2
+    else if ds_consulta.DataSet.FieldByName('FG_FINALIDADE').AsString = 'AJUSTE'  then
+      cmb_finalidade.ItemIndex  := 3;
+
+    //ambiente de emissao : producao ou homologação
+    if ds_consulta.DataSet.FieldByName('FG_AMBIENTE').AsString = 'PRODUÇÃO' then
+      cmb_Ambiente.ItemIndex    := 0
+    else if ds_consulta.DataSet.FieldByName('FG_AMBIENTE').AsString = 'HOMOLOGAÇÃO' then
+      cmb_Ambiente.ItemIndex    := 1;
+
+    edt_chave_devolucao_01.text :=  ds_consulta.DataSet.FieldByName('NR_CHAVEDEVOLUCAO_01').AsString;
+    edt_chave_devolucao_02.text :=  ds_consulta.DataSet.FieldByName('NR_CHAVEDEVOLUCAO_02').AsString;
+    edt_chave_devolucao_03.text :=  ds_consulta.DataSet.FieldByName('NR_CHAVEDEVOLUCAO_03').AsString;
+    edt_chave_devolucao_04.text :=  ds_consulta.DataSet.FieldByName('NR_CHAVEDEVOLUCAO_04').AsString;
+
+    edt_versaoAPP.text       :=  ds_consulta.DataSet.FieldByName('NR_VERSAOAPP').AsString;
+
+    ///trazendo os dados do destinatario da nota
+    edt_cnpj_cpf.text := ds_consulta.DataSet.FieldByName('NR_CNPJ_CPF').AsString;
+    edt_cnpj_cpfExit( SELF );
+
+    //TRAZENDO O TIPO DE FRETE
+    if ds_consulta.DataSet.FieldByName('FG_FRETE').AsString = 'SEM FRETE' then
+      cmb_tipo_frete.ItemIndex  := 0
+    else if ds_consulta.DataSet.FieldByName('FG_FRETE').AsString = 'EMITENTE' then
+      cmb_tipo_frete.ItemIndex  := 1
+    else if ds_consulta.DataSet.FieldByName('FG_FRETE').AsString = 'DESTINATÁRIO' then
+      cmb_tipo_frete.ItemIndex  := 2;
+
+    //INFORMACOES SOBRE A TRANSPORTADORA
+    CD_TRANSPORTADORA  :=  ds_consulta.DataSet.FieldByName('CD_TRANSPORTADORA').AsInteger;
+    CarregaDadosTransportadora;
+
+    edt_placa.text     :=  ds_consulta.DataSet.FieldByName('NR_PLACA').AsString;
+    edt_rntc.text      :=  ds_consulta.DataSet.FieldByName('RNTC').AsString;
+    edt_ufveiculo.text :=  ds_consulta.DataSet.FieldByName('UF').AsString;
+
+    memInfComplementar.Text :=  ds_consulta.DataSet.FieldByName('DS_INFADICIONAL').AsString;
+    memInfFisco.Text        :=  ds_consulta.DataSet.FieldByName('DS_INFAOFISCO').AsString;
+
+    edt_ValorFreteTotalNF.Text := FormatFloat( '#,###,###,##0.00', ds_consulta.DataSet.FieldByName('VR_FRETE').AsFloat );
+    edt_valor_frete.Text       := FormatFloat( '#,###,###,##0.00', ds_consulta.DataSet.FieldByName('VR_FRETE').AsFloat );
+    edt_ValorSeguroTotal.Text  := FormatFloat( '#,###,###,##0.00',ds_consulta.DataSet.FieldByName('VR_SEGURO').AsFloat );
+    edt_DescontoTotalNF.Text   := FormatFloat( '#,###,###,##0.00',ds_consulta.DataSet.FieldByName('VR_DESCONTO').AsFloat);
+    edt_OutrasDespesas.Text    := FormatFloat( '#,###,###,##0.00',ds_consulta.DataSet.FieldByName('VR_OUTROS').AsFloat);
+  end;
+
+  { //valores calculados automaticamente
+  fnc_remove_ponto( edt_ValorTotalProdutosNF.Text):= ds_consulta.DataSet.FieldByName('VR_TOTALPRODUTOS').AsFloat
+  fnc_remove_ponto( edt_ValorIPI.Text )           :=  ds_consulta.DataSet.FieldByName('VR_TOTALIPI').AsFloat
+  fnc_remove_ponto( edt_ValorTotalNota.Text )     :=  ds_consulta.DataSet.FieldByName('VR_TOTALNOTA').AsFloat
+  fnc_remove_ponto( edt_BaseICMS.Text )           :=  ds_consulta.DataSet.FieldByName('VR_BASECALCULOICMS').AsFloat
+  fnc_remove_ponto( edt_ValorICMS.Text )          :=  ds_consulta.DataSet.FieldByName('VR_TOTALICMS').AsFloat
+  fnc_remove_ponto( edt_BaseICMSSubst.Text )      :=  ds_consulta.DataSet.FieldByName('VR_BASECALCULOICMSST').AsFloat
+  fnc_remove_ponto( edt_ValorICMSSubst.Text )     :=  ds_consulta.DataSet.FieldByName('VR_TOTALICMSST').AsFloat
+  }
+end;
+
+
+procedure Tform_consulta_nfe.btn_CancelarClick(Sender: TObject);
+var
+  XMLRetorno, ArquivoCancelamento : String;
+
+begin
+  if NOT CriarMensagem('CONFIRMACAO','TEM CERTEZA QUE DESEJA CANCELAR ESSA NOTA?') then
+    Exit;
+
+
+  try
+    //indicando onde deve ser salvo o xml de retorno do cancelamento
+    //o componente ja estara configurado com esse parametro, apenas estmaos reforçando
+    ConfigurarParametrosNFE( NFE );
+
+    //Forçar o salvanto do xml de retorno
+    NFe.Configuracoes.Arquivos.Salvar := True;
+
+    //limpando e carregando novas notas no componente
+    NFe.NotasFiscais.Clear;
+    NFe.NotasFiscais.LoadFromFile( ds_consulta.DataSet.FieldByName('DS_ARQUIVO_XML').AsString );
+
+    //limpando todos os eventos do componente
+    NFe.EventoNFe.Evento.Clear;
+    NFe.EventoNFe.idLote := 1;
+
+    //Criando e preenchendo os dados sobre o evento
+    with NFe.EventoNFe.Evento.New do
+    begin
+      //data e hora do evento de cancelamento
+      infEvento.dhEvento := now;
+
+      //tipo de evento
+      infEvento.tpEvento := teCancelamento;
+
+      //o motivo do cancelamento, minimo de 15 caracteres
+      infEvento.detEvento.xJust := 'ERRO DE PREENCIMENTO DOS DADOS DA NOTA FISCAL ELETRÔNICA';
+    end;
+
+    //enviando para sefaz o envento de cancelamento
+    NFe.EnviarEvento ( 1 );
+
+    //capturando o arquivo de retorno dentro de uma string
+    XMLRetorno  :=  NFe.WebServices.EnvEvento.EventoRetorno.XmlRetorno;
+
+    //salvando o ultimo endereco de email enviado
+    ds_consulta.DataSet.Edit;
+    ds_consulta.DataSet.FieldByName('DS_ARQUIVO_CANCELAMENTO').AsString := ArquivoCancelamento;
+    ds_consulta.DataSet.FieldByName('FG_STATUS').AsString               := 'CANCELADA';
+    ds_consulta.DataSet.Post;
+
+    //verificando a necessidade de impressão desse evento
+    if CriarMensagem('CONFIRMACAO','NOTA CANCELADA COM SUCESSO! DESEJA VISUALIZAR A IMPRESSÃO DO CANCELAMENTO?') then
+    begin
+      //Nfe.EventoNFe.Evento.Clear;
+      //Nfe.EventoNFe.LerXML( ArquivoCancelamento );
+      Nfe.ImprimirEvento;
+    end;
+
+  Except
+    on E:Exception do
+    begin
+      CriarMensagem('ERRO','NÃO FOI POSSÍVEL CANCELAR ESSA NOTA: ' + E.Message );
+      Abort;
+    end;
+
+  end;
+end;
+
+procedure Tform_consulta_nfe.btn_CartaCorrecaoClick(Sender: TObject);
+var
+  ArquivoCartaCorrecao, Correcao,
+  XMLRetorno : String;
+
+begin
+
+  if NOT CriarMensagem('CONFIRMACAO','TEM CERTEZA QUE DESEJA GERAR CARTAS DE CORREÇÃO PARA ESSA NOTA?') then
+    Exit;
+
+  try
+    //indicando onde deve ser salvo o xml de retorno do cancelamento
+    //o componente ja estara configurado com esse parametro, apenas estmaos reforçando
+
+
+    ConfigurarParametrosNFE( NFE );
+
+    //Forçar o salvanto do xml de retorno
+    NFe.Configuracoes.Arquivos.Salvar := True;
+
+    //limpando e carregando novas notas no componente
+    NFe.NotasFiscais.Clear;
+    NFe.NotasFiscais.LoadFromFile( ds_consulta.DataSet.FieldByName('DS_ARQUIVO_XML').AsString );
+
+    //limpando todos os eventos do componente
+    NFe.EventoNFe.Evento.Clear;
+    NFe.EventoNFe.idLote := 1;
+
+    //Criando e preenchendo os dados sobre o evento
+    with NFe.EventoNFe.Evento.New do
+    begin
+      //data e hora do evento de cancelamento
+      infEvento.dhEvento := now;
+      //tipo de evento
+      infEvento.tpEvento := teCCe;
+
+      //PREENCHER COM A CHAVE DA NFE QUE TERA A CARTA DE CORREÇÃO
+      infEvento.chNFe  := SomenteNumeros( Nfe.NotasFiscais.Items[0].NFe.infNFe.ID );
+
+      //PREENCHER COM O CNPJ DO EMITENTE DA NOTA
+      infEvento.CNPJ   := SomenteNumeros( form_conexao_nfe.qryDadosEmissor.FieldByName('NR_CNPJ').AsString );
+
+      Correcao := 'Correção a ser considerada, texto livre, mínimo de 15 Caracteres. A correção mais recente substitui as anteriores.';
+
+      if not(InputQuery('WebServices Eventos: Carta de Correção', 'Correção a ser considerada', Correcao)) then
+         exit;
+
+      //o motivo do CORRECAO, minimo de 15 caracteres
+      infEvento.detEvento.xCorrecao := Correcao;
+
+      infEvento.nSeqEvento := 1;
+
+    end;
+
+
+    //enviando para sefaz o envento de cancelamento
+    NFe.EnviarEvento ( 1 );
+
+    //capturando o arquivo de retorno dentro de uma string
+    XMLRetorno  :=  NFe.WebServices.EnvEvento.EventoRetorno.XmlRetorno;
+
+    //criando o caminho para o arquivo
+    ArquivoCartaCorrecao := form_conexao_nfe.qryDadosEmissor.FieldByName('DS_CAMINHO_XML_CARTAS').AsString
+                          + '\' + Nfe.NotasFiscais.Items[0].NFe.infNFe.ID + '.xml';
+
+    //salvando o ultimo endereco de email enviado
+    ds_consulta.DataSet.Edit;
+    ds_consulta.DataSet.FieldByName('DS_ARQUIVO_CARTACORRECAO').AsString := ArquivoCartaCorrecao;
+    ds_consulta.DataSet.FieldByName('FG_STATUS').AsString               := 'COM C.CORREÇÃO';
+    ds_consulta.DataSet.Post;
+
+    //verificando a necessidade de impressão desse evento
+    if CriarMensagem('CONFIRMACAO','CARTA DE CORRÇÃO GERADA COM SUCESSO! DESEJA VISUALIZAR A IMPRESSÃO DA CARTA?') then
+    begin
+      //Nfe.EventoNFe.Evento.Clear;
+      //Nfe.EventoNFe.LerXML( ArquivoCancelamento );
+      Nfe.ImprimirEvento;
+    end;
+
+  Except
+    on E:Exception do
+    begin
+      CriarMensagem('ERRO','NÃO FOI POSSÍVEL GERAR A CARTA DE CORREÇÃO PARA ESSA NOTA: ' + E.Message );
+      Abort;
+    end;
+
+  end;
+end;
+
+procedure Tform_consulta_nfe.btn_consulta_emissorClick(Sender: TObject);
+begin
+  //cria o form_consulta_cfop
+  form_consulta_emissor := Tform_consulta_emissor.Create ( Self );
+  //habilita o botao para selecao
+  form_consulta_emissor.btn_Selecionar.Enabled := true;
+
+  form_consulta_emissor.Show;
+end;
+
+procedure Tform_consulta_nfe.dbg_registrosDblClick(Sender: TObject);
+begin
+  //ATRIBUI A OPERACAO DE ALTERACAO PARA A VARIAVEL
+  sTipoOperacao :=  'ALTERAR';
+
+  //se a grid nao estiver vazia entao carrego os valores para dentro do form cadastro
+  if not ds_consulta.DataSet.IsEmpty then
+  begin
+    ID_NOTAFISCAL := ds_consulta.DataSet.FieldByName('ID_NOTAFISCAL').AsInteger;
+
+    //cria o formulario de cadastro
+    form_cadastro_nfe := Tform_cadastro_nfe.Create (Self);
+
+    CarregarParametrosEdits;
+
+    CarregarVolumesFrete;
+    CarregarFaturas;
+    CarregarPagamentos;
+
+    form_cadastro_nfe.Show;
+
+    //CARREGAR OS PRODUTOS APOS OS PROCEDIMENTOS DO FORM.SHOW
+    CarregarProdutos;
+  end;
+end;
+
+procedure Tform_consulta_nfe.dbg_registrosDrawColumnCell(Sender: TObject;
+  const Rect: TRect; DataCol: Integer; Column: TColumn; State: TGridDrawState);
+begin
+  //funcao que da um layout diferente ao dbgrid
+  prcDrawColumnCell( Sender, Rect, DataCol, Column, State );
+end;
+
+procedure Tform_consulta_nfe.dbg_registrosKeyDown(Sender: TObject;
+  var Key: Word; Shift: TShiftState);
+begin
+  //se pressionou a tecla delete dentro do dbgrid entao chama o delete do dataset
+  if ( Key = VK_DELETE ) and ( not ( ds_consulta.DataSet.IsEmpty ) ) and
+     ( CriarMensagem('CONFIRMAÇÃO','Tem Certeza que deseja EXCLUIR essa Informação?') ) then
+    ds_consulta.DataSet.Delete;
+end;
+
+procedure Tform_consulta_nfe.dbg_registrosTitleClick( Column: TColumn );
+var
+  Key : Word;
+
+begin
+  //quando clica no titulo da coluna do dbgrid muda a ordenação e
+  //o campo que a consulta é feita
+
+  //se trocou a coluna de busca entao tem que limpar query e chamar o metodo
+  //edt_consultaKeyDown manualmente que é onde a consulta é montada
+  if ( NomeCampo <> '' ) and ( NomeCampo <> Column.FieldName ) then
+  begin
+    edt_consulta.Clear;
+    Key := VK_RETURN;
+    edt_consultaKeyDown( edt_consulta, Key, [] );
+  end;
+
+
+  NomeCampo := Column.FieldName ; //pega o nome do campo dessa coluna
+  TipoCampo := Column.Field.DataType; // pega o tipo do campo da coluna (integer, string, etc)
+
+  //pinta o titulo da coluna que foi clicada
+  prc_pintar_titulo_coluna( dbg_registros, Column );
+
+  //trocar o texto do edt_consulta
+  lbl_texto.Caption := 'Digite o(a) '+ Column.Title.Caption +
+                       ' que dejesa encontrar e aperte ENTER.';
+
+
+  if ( not ( ds_consulta.DataSet.IsEmpty ) ) then
+  begin
+    //ao inves de usar o order by, pode ser ordenado usando a propriedade
+    // IndexFieldNames nos componentes TFDQuery - :D corresponde ao decrescente
+    if ( ds_consulta.DataSet as TFDQuery ).IndexFieldNames = Column.FieldName Then
+      ( ds_consulta.DataSet as TFDQuery ).IndexFieldNames := Column.FieldName + ':D'
+    else
+      ( ds_consulta.DataSet as TFDQuery ).IndexFieldNames := Column.FieldName;
+
+    //apos realizar a ordenação, coloca o cursor no primeiro campo
+    ( ds_consulta.DataSet as TFDQuery ).First;
+
+    //aumenta o tamanho da linha do ddgrid
+    prc_ajusta_tamanho_linha( dbg_registros );
+  end;
+
+end;
+
+procedure Tform_consulta_nfe.ds_consultaDataChange(Sender: TObject;
+  Field: TField);
+begin
+  //habilitando o botao somente quando AS CONDIÇOES FOREM VERDADEIRAS
+  btn_Imprimir.Enabled := ds_consulta.DataSet.FieldByName('DS_ARQUIVO_XML').AsString <> '';
+  btn_Enviar.Enabled   := ds_consulta.DataSet.FieldByName('DS_ARQUIVO_XML').AsString <> '';
+
+  if ( ds_consulta.DataSet.FieldByName('FG_STATUS').AsString = 'TRANSMITIDA' ) OR
+     ( ds_consulta.DataSet.FieldByName('FG_STATUS').AsString = 'COM C.CORREÇÃO' )  then
+  begin
+     btn_Cancelar.Enabled      := True;
+     btn_CartaCorrecao.Enabled := True;
+  end else
+  begin
+    btn_Cancelar.Enabled      := false;
+    btn_CartaCorrecao.Enabled := false;
+  end;
+
+  btn_Transmitir.Enabled     := ds_consulta.DataSet.FieldByName('FG_STATUS').AsString = 'CRIADA';
+end;
+
+procedure Tform_consulta_nfe.edt_consultaKeyDown(Sender: TObject;
+  var Key: Word; Shift: TShiftState);
+var
+  sWhere,
+  sFiltro : String;
+
+begin
+  //se for pressionada a tecla enter dentro do edtConsulta
+  if ( key = VK_RETURN ) and ( ds_consulta.DataSet <> nil ) then
+  begin
+
+    //limpa o sql existente na query da ultima consulta realizada
+    //e atribui o sql Padrao Salvo na Variavel
+    ( ds_consulta.DataSet as TFDQuery ).Close;
+    ( ds_consulta.DataSet as TFDQuery ).SQL.Clear;
+    ( ds_consulta.DataSet as TFDQuery ).SQL.AddStrings( sSql );
+
+    //remove os caracteres do edt_consulta.text se o campo escolhido for do tipo inteiro
+    if ( TipoCampo = ftInteger ) then
+      edt_consulta.Text := SomenteNumeros( edt_consulta.Text );
+
+    //se for diferente de vazio tenho que buscar utilizando parametros
+    if Trim ( edt_consulta.Text ) <> '' then
+    begin
+      //testo pra ver se já existe um where no sql
+      if Pos ('WHERE', AnsiUpperCase( ( ds_consulta.DataSet as TFDQuery ).SQL.Text ) ) > 0 then
+        sWhere := ' AND '
+      else
+        sWhere :=  ' WHERE ';
+
+      if ( TipoCampo = ftInteger ) or  ( TipoCampo = ftDate ) then
+        sFiltro := sWhere + NomeCampo + ' = :TEXTO '
+      else
+        sFiltro := sWhere + NomeCampo + ' LIKE ''%'' || :TEXTO || ''%''  ';
+
+      //Adiciona o Filtro montado ao sql da query
+      ( ds_consulta.DataSet as TFDQuery ).SQL.Add ( sFiltro );
+
+      //manda o parametro texto receber o conteudo do edit que deve ser encontrado
+      ( ds_consulta.DataSet as TFDQuery ).ParamByName('TEXTO').AsString := edt_consulta.Text;
+    end;
+
+
+    //mostrara somente as notas de cada emissor
+    IF CD_EMISSOR > 0 THEN
+      ( ds_consulta.DataSet as TFDQuery ).ParamByName('P_CD_EMISSOR').AsInteger := CD_EMISSOR
+    else
+    begin
+      CriarMensagem('ERRO','Selecione um Emissor para poder CONSULTAR Notas Fiscais.');
+      Abort;
+    end;
+
+
+    //FAZENDO O TRATAMENTO DO PARAMETRO DA DATA
+    if Trim ( edt_inicio.Text ) <> '/  /' then
+    begin
+      //se a data inicial for preenchida, o parametro inicial recebe essa data
+      ( ds_consulta.DataSet as TFDQuery ).ParamByName('P_INICIO').AsDate := StrToDate ( edt_inicio.Text );
+
+      //se a data final for preenchida, o parametro final recebe essa data
+      //se nao estiver preenchida o parametro final recebe o inicial e o
+      //intervalo passa a ser somente de um dia, o dia preenchido no começo
+      if Trim ( edt_fim.Text ) <> '/  /' then
+      begin
+        //validando o intervalo
+        if StrToDate( edt_fim.Text ) < StrToDate( edt_inicio.Text ) then
+        begin
+          CriarMensagem('ERRO','Data Final MENOR que a Data Inicial.');
+          edt_fim.SetFocus;
+          Abort;
+        end;
+
+        ( ds_consulta.DataSet as TFDQuery ).ParamByName('P_FIM').AsDate := StrToDate ( edt_fim.Text );
+
+      end else
+        ( ds_consulta.DataSet as TFDQuery ).ParamByName('P_FIM').AsDate := StrToDate ( edt_inicio.Text );
+
+    end else
+    begin
+      //se o parametro inicial for vazio eu pego um intervalo aleatorio
+      ( ds_consulta.DataSet as TFDQuery ).ParamByName('P_INICIO').AsString:= '01/01/1900';
+      ( ds_consulta.DataSet as TFDQuery ).ParamByName('P_FIM').AsString   := '01/01/3000';
+    end;
+
+    //abre a consulta apos a manipulação do sql
+    ( ds_consulta.DataSet as TFDQuery ).open;
+    ( ds_consulta.DataSet as TFDQuery ).IndexFieldNames := NomeCampo;
+    ( ds_consulta.DataSet as TFDQuery ).First;
+
+
+    //ajustas as colunas do dbgrid
+    //prc_ajustar_colunas_grid( dbg_registros );
+
+    //aumenta o tamanho da linha do ddgrid
+    prc_ajusta_tamanho_linha( dbg_registros );
+  end;
+end;
+
+procedure Tform_consulta_nfe.edt_inicioExit(Sender: TObject);
+begin
+  //Fazendo a Verificação da Data
+  if not ValidaData (  ( Sender as TMaskEdit).Text  ) then
+    ( Sender as TMaskEdit).SetFocus;
+end;
+
+procedure Tform_consulta_nfe.FormClose(Sender: TObject;
+  var Action: TCloseAction);
+begin
+  //libera o sql padrao da memoria
+  sSQL.Destroy;
+
+  //fecha a query do dbgrid
+  if ds_consulta.DataSet <> nil then
+    ds_consulta.DataSet.Close;
+
+  //fecha a query do emissor
+  form_conexao_nfe.qryDadosEmissor.Close;
+
+  //Libera o Form da Memoria
+  Action := caFree;
+  form_consulta_nfe := nil; // Evita ponteiro inválido
+
+end;
+
+procedure Tform_consulta_nfe.FormCreate(Sender: TObject);
+begin
+  sSQL := TStringList.Create;
+
+  if ds_consulta.DataSet <> nil then
+  begin
+    sSQL.Assign( ( ds_consulta.DataSet as TFDQuery ).SQL );
+
+    //ordena inicialmente pela coluna numero 0, ou seja, a primeira coluna do dbgrid
+    dbg_registrosTitleClick( dbg_registros.Columns[0] );
+  end;
+end;
+
+procedure Tform_consulta_nfe.FormShow(Sender: TObject);
+begin
+
+  //se houver um emissor cadastrado traz automaticamente
+  BuscarEmissorPadrao;
+
+  if cd_emissor > 0  then
+  begin
+    //label emissor recebe o valor do emissor padrao
+    form_consulta_nfe.lbl_emissor.Caption:= 'EMISSOR SELECIONADO: '+
+        form_conexao_nfe.qryConsultaEmissorPadrao.FieldByName('NR_CNPJ').AsString + ' - '+
+        form_conexao_nfe.qryConsultaEmissorPadrao.FieldByName('DS_RAZAOSOCIAL').AsString;
+
+    //FAZ A BUSCA NA QUERY DO EMISSOR SELECIONADO
+    SelecionaEmissorNFE( CD_EMISSOR, Nfe );
+  end;
+
+
+  form_conexao_nfe.qryConsultaEmissorPadrao.Close;
+
+  //Seta o focus no edit de consulta
+  edt_consulta.SetFocus;
+end;
+
+end.

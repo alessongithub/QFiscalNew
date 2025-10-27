@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<inutNFe xmlns="http://www.portalfiscal.inf.br/nfe" versao="4.00">
+  <infInut>
+    <tpAmb>2</tpAmb>
+    <xServ>INUTILIZAR</xServ>
+    <cUF>35</cUF>
+    <ano>25</ano>
+    <CNPJ>35283663000145</CNPJ>
+    <mod>55</mod>
+    <serie>1</serie>
+    <nNFIni>94</nNFIni>
+    <nNFFin>103</nNFFin>
+    <xJust>Inutilização por ajuste de sequência</xJust>
+  </infInut>
+</inutNFe>

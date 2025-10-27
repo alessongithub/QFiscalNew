@@ -1,0 +1,6 @@
+# Arquivo de tokens válidos para o emissor
+# Um token por linha
+# Linhas iniciadas com # são comentários
+
+# Token padrão (altere este valor)
+qfiscal_default_token_2025
