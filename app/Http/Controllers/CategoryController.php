@@ -70,7 +70,14 @@ class CategoryController extends Controller
         }
         $v['tenant_id'] = $tenantId;
         $v['active'] = $request->boolean('active', true);
-        Category::create($v);
+        $cat = Category::create($v);
+        \App\Models\CategoryAudit::create([
+            'tenant_id' => $tenantId,
+            'user_id' => auth()->id(),
+            'category_id' => $cat->id,
+            'action' => 'created',
+            'changes' => ['name' => $cat->name, 'active' => $cat->active, 'parent_id' => $cat->parent_id],
+        ]);
         return redirect()->route('categories.index')->with('success','Categoria criada.');
     }
 
@@ -98,7 +105,23 @@ class CategoryController extends Controller
             abort_unless($parent->tenant_id === $tenantId, 403);
         }
         $v['active'] = $request->boolean('active', true);
+        $before = $category->replicate();
         $category->update($v);
+        $changes = [];
+        foreach (['name','active','parent_id'] as $f) {
+            if ($before->$f != $category->$f) {
+                $changes[$f] = ['old' => $before->$f, 'new' => $category->$f];
+            }
+        }
+        if (!empty($changes)) {
+            \App\Models\CategoryAudit::create([
+                'tenant_id' => $tenantId,
+                'user_id' => auth()->id(),
+                'category_id' => $category->id,
+                'action' => 'updated',
+                'changes' => $changes,
+            ]);
+        }
         return redirect()->route('categories.index')->with('success','Categoria atualizada.');
     }
 
@@ -106,7 +129,15 @@ class CategoryController extends Controller
     {
         abort_unless(auth()->user()->hasPermission('categories.delete'), 403);
         abort_unless($category->tenant_id === auth()->user()->tenant_id, 403);
+        $snap = ['name' => $category->name, 'active' => $category->active, 'parent_id' => $category->parent_id];
         $category->delete();
+        \App\Models\CategoryAudit::create([
+            'tenant_id' => auth()->user()->tenant_id,
+            'user_id' => auth()->id(),
+            'category_id' => null,
+            'action' => 'deleted',
+            'changes' => $snap,
+        ]);
         return redirect()->route('categories.index')->with('success','Categoria excluída.');
     }
 

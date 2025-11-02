@@ -1,6 +1,12 @@
 <x-app-layout>
     <x-slot name="header">
-        <h2 class="font-semibold text-xl text-gray-800 leading-tight">Checkout do Plano</h2>
+        <h2 class="font-semibold text-xl text-gray-800 leading-tight">
+            @if($addon)
+                Checkout - Espaço Adicional
+            @else
+                Checkout do Plano
+            @endif
+        </h2>
     </x-slot>
 
     <div class="max-w-3xl mx-auto">
@@ -11,15 +17,30 @@
       @endif
 
       <div class="border rounded p-4 space-y-4 bg-white">
-        <p class="text-sm text-gray-700">Plano selecionado: <strong>{{ $plan?->name ?? 'Seu plano atual' }}</strong></p>
-        <p class="text-2xl font-bold">R$ {{ number_format($plan?->price ?? 0, 2, ',', '.') }}</p>
+        @if($addon)
+          @php
+            $typeLabel = $addon->type === 'data' ? 'dados' : 'arquivos';
+          @endphp
+          <p class="text-sm text-gray-700">Espaço adicional: <strong>+{{ $addon->quantity_mb }} MB de {{ $typeLabel }}</strong></p>
+          <p class="text-2xl font-bold">R$ {{ number_format($addon->price, 2, ',', '.') }}/mês</p>
 
-        <form method="POST" action="{{ route('checkout.create') }}" class="space-y-3">
-          @csrf
-          <input type="hidden" name="plan_id" value="{{ $plan?->id }}">
-          <p class="text-sm text-gray-700">Pagamento via Mercado Pago (cartão 1x ou Pix).</p>
-          <button class="px-4 py-2 bg-blue-600 text-white rounded">Pagar com Mercado Pago</button>
-        </form>
+          <form method="POST" action="{{ route('checkout.create') }}" class="space-y-3">
+            @csrf
+            <input type="hidden" name="addon_id" value="{{ $addon->id }}">
+            <p class="text-sm text-gray-700">Pagamento via Mercado Pago (cartão 1x ou Pix).</p>
+            <button class="px-4 py-2 bg-blue-600 text-white rounded">Pagar com Mercado Pago</button>
+          </form>
+        @else
+          <p class="text-sm text-gray-700">Plano selecionado: <strong>{{ $plan?->name ?? 'Seu plano atual' }}</strong></p>
+          <p class="text-2xl font-bold">R$ {{ number_format($plan?->price ?? 0, 2, ',', '.') }}</p>
+
+          <form method="POST" action="{{ route('checkout.create') }}" class="space-y-3">
+            @csrf
+            <input type="hidden" name="plan_id" value="{{ $plan?->id }}">
+            <p class="text-sm text-gray-700">Pagamento via Mercado Pago (cartão 1x ou Pix).</p>
+            <button class="px-4 py-2 bg-blue-600 text-white rounded">Pagar com Mercado Pago</button>
+          </form>
+        @endif
 
         <p class="text-xs text-gray-500">Ao clicar, você será direcionado para o ambiente de pagamento seguro do Mercado Pago.</p>
       </div>

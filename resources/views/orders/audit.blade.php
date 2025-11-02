@@ -74,24 +74,30 @@
                                             'updated' => 'bg-blue-500',
                                             'canceled' => 'bg-red-600',
                                             'fulfilled' => 'bg-green-600',
+                                            'finalized' => 'bg-green-600',
                                             'reopened' => 'bg-yellow-500',
-                                            'returned' => 'bg-orange-500'
+                                            'returned' => 'bg-orange-500',
+                                            'auto_adjusted_with_returns' => 'bg-purple-500'
                                         ];
                                         $actionIcons = [
                                             'created' => 'M12 6v6m0 0v6m0-6h6m-6 0H6', // Plus icon
                                             'updated' => 'M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z', // Pencil icon
                                             'canceled' => 'M6 18L18 6M6 6l12 12', // X icon
                                             'fulfilled' => 'M5 13l4 4L19 7', // Checkmark icon
+                                            'finalized' => 'M5 13l4 4L19 7', // Checkmark icon
                                             'reopened' => 'M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15', // Refresh icon
-                                            'returned' => 'M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6' // Arrow left icon
+                                            'returned' => 'M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6', // Arrow left icon
+                                            'auto_adjusted_with_returns' => 'M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15' // Refresh/Adjust icon
                                         ];
                                         $actionLabels = [
                                             'created' => 'criou o pedido',
                                             'updated' => 'atualizou o pedido',
                                             'canceled' => 'cancelou o pedido',
                                             'fulfilled' => 'finalizou o pedido',
+                                            'finalized' => 'finalizou o pedido',
                                             'reopened' => 'reabriu o pedido',
-                                            'returned' => 'registrou devolução'
+                                            'returned' => 'registrou devolução',
+                                            'auto_adjusted_with_returns' => 'ajustou automaticamente'
                                         ];
                                         $iconPath = $actionIcons[$audit->action] ?? 'M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z'; // Default info icon
                                         $bgColor = $actionColors[$audit->action] ?? 'bg-gray-500';
@@ -294,8 +300,73 @@
                                                             @if(isset($audit->changes['total_refund']))
                                                                 <p><span class="font-medium">Valor devolvido:</span> R$ {{ number_format($audit->changes['total_refund'], 2, ',', '.') }}</p>
                                                             @endif
-                                                            @if(isset($audit->changes['items_returned']))
-                                                                <p><span class="font-medium">Itens devolvidos:</span> {{ count($audit->changes['items_returned']) }} item(s)</p>
+                                                            @php
+                                                                $det = $audit->changes['detalhes'] ?? ($audit->changes['itens_text'] ?? null);
+                                                                $itens = $audit->changes['itens'] ?? null;
+                                                            @endphp
+                                                            @if($det)
+                                                                <p><span class="font-medium">Itens devolvidos:</span> {{ $det }}</p>
+                                                            @elseif(is_array($itens) && count($itens))
+                                                                <div class="text-xs">
+                                                                    <span class="font-medium">Itens devolvidos:</span>
+                                                                    <ul class="list-disc ml-5">
+                                                                        @foreach($itens as $i)
+                                                                            <li>{{ $i['produto'] ?? 'Item' }} — {{ number_format((float)($i['quantidade'] ?? 0), 3, ',', '.') }} (R$ {{ number_format((float)($i['valor'] ?? 0), 2, ',', '.') }})</li>
+                                                                        @endforeach
+                                                                    </ul>
+                                                                </div>
+                                                            @endif
+                                                        </div>
+                                                    @elseif($audit->action === 'status_changed')
+                                                        @php
+                                                            $map = [
+                                                                'open' => 'Aberto',
+                                                                'in_progress' => 'Orçada',
+                                                                'in_service' => 'Em andamento',
+                                                                'service_finished' => 'Serviço finalizado',
+                                                                'warranty' => 'Garantia',
+                                                                'no_repair' => 'Sem reparo',
+                                                                'finished' => 'Finalizado',
+                                                                'fulfilled' => 'Finalizado',
+                                                                'canceled' => 'Cancelado',
+                                                                'partial_returned' => 'Devolução parcial',
+                                                            ];
+                                                            $old = $audit->changes['status']['old'] ?? null;
+                                                            $new = $audit->changes['status']['new'] ?? null;
+                                                        @endphp
+                                                        <div class="space-y-1">
+                                                            <p><span class="font-medium">Status:</span> {{ $map[$old] ?? $old }} → {{ $map[$new] ?? $new }}</p>
+                                                        </div>
+                                                    @elseif($audit->action === 'auto_adjusted_with_returns')
+                                                        <div class="space-y-2">
+                                                            @if(isset($audit->changes['adjustments']) && is_array($audit->changes['adjustments']))
+                                                                <p class="font-medium">Ajustes realizados:</p>
+                                                                <ul class="list-disc ml-5 space-y-1">
+                                                                    @foreach($audit->changes['adjustments'] as $adjustment)
+                                                                        @if(isset($adjustment['action']) && $adjustment['action'] === 'removed')
+                                                                            <li>
+                                                                                <span class="font-medium">{{ $adjustment['name'] ?? 'Item' }}</span> — 
+                                                                                Removido (quantidade original: {{ number_format((float)($adjustment['original_qty'] ?? 0), 3, ',', '.') }})
+                                                                            </li>
+                                                                        @elseif(isset($adjustment['action']) && $adjustment['action'] === 'adjusted')
+                                                                            <li>
+                                                                                <span class="font-medium">{{ $adjustment['name'] ?? 'Item' }}</span> — 
+                                                                                Quantidade ajustada: 
+                                                                                {{ number_format((float)($adjustment['original_qty'] ?? 0), 3, ',', '.') }} → 
+                                                                                {{ number_format((float)($adjustment['new_qty'] ?? 0), 3, ',', '.') }}
+                                                                                @if(isset($adjustment['original_discount']) && (float)$adjustment['original_discount'] > 0)
+                                                                                    | Desconto original: R$ {{ number_format((float)$adjustment['original_discount'], 2, ',', '.') }}
+                                                                                @endif
+                                                                                @if(isset($adjustment['new_discount']) && (float)$adjustment['new_discount'] > 0)
+                                                                                    | Novo desconto: R$ {{ number_format((float)$adjustment['new_discount'], 2, ',', '.') }}
+                                                                                @endif
+                                                                            </li>
+                                                                        @endif
+                                                                    @endforeach
+                                                                </ul>
+                                                            @endif
+                                                            @if(isset($audit->changes['total_adjustments']))
+                                                                <p><span class="font-medium">Total de ajustes:</span> {{ $audit->changes['total_adjustments'] }}</p>
                                                             @endif
                                                         </div>
                                                     @else

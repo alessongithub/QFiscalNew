@@ -36,18 +36,6 @@ Resumo por plano:
   - has_emissor: false
   - Multiusuário: não
 
-- Plano Emissor Fiscal (NOVO)
-  - Preço: R$ 39,90/mês
-  - Objetivo: Cliente usa o Emissor Delphi para emitir NFe; no ERP ele fica com acesso equivalente ao Plano Gratuito
-  - ERP: em “modo free” (sem NFe/PDV), sem limites no Emissor
-  - Recomendações de features para o plano:
-    - has_emissor: true
-    - has_erp: true (mas com erp_access_level: "free")
-    - erp_access_level: "free" (sugerido para aplicar regras do Gratuito no ERP)
-    - allow_issue_nfe: false
-    - allow_pos: false
-    - max_users: 1; max_clients: 50; max_products: 50 (no ERP). Emissor Delphi sem limites.
-  - Autenticação: login e senha iguais ao cadastro do tenant; enviar senha por e-mail conforme fluxo atual
 
 - Plano Básico
   - max_users: 1 (não multiusuário)

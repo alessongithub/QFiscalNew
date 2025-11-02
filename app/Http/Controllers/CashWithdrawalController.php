@@ -98,6 +98,16 @@ class CashWithdrawalController extends Controller
             'type' => 'normal',
             'created_by' => auth()->id(),
         ]);
+        try {
+            \App\Models\CashWithdrawalAudit::create([
+                'tenant_id' => $tenantId,
+                'user_id' => auth()->id(),
+                'cash_withdrawal_id' => $withdrawal->id,
+                'action' => 'created',
+                'notes' => 'Sangria registrada',
+                'changes' => $withdrawal->toArray(),
+            ]);
+        } catch (\Throwable $e) { }
         
         // Atualizar saldo do caixa
         if ($dailyCash) {
@@ -142,11 +152,41 @@ class CashWithdrawalController extends Controller
             'reason.required' => '⚠️ O motivo da sangria é obrigatório.',
         ]);
         
+        $before = $cashWithdrawal->getOriginal();
         $oldAmount = $cashWithdrawal->amount;
         $cashWithdrawal->update([
             ...$v,
             'updated_by' => auth()->id(),
         ]);
+        try {
+            $after = $cashWithdrawal->fresh();
+            $diff = [];
+            foreach (array_keys($v) as $k) {
+                $old = $before[$k] ?? null;
+                $new = $after->$k ?? null;
+                if ((string)$old !== (string)$new) {
+                    if ($k === 'date') {
+                        $old = $old ? \Carbon\Carbon::parse($old)->format('d/m/Y') : null;
+                        $new = $new ? \Carbon\Carbon::parse($new)->format('d/m/Y') : null;
+                    }
+                    if ($k === 'amount') {
+                        $old = $old !== null ? ('R$ ' . number_format((float)$old,2,',','.')) : null;
+                        $new = $new !== null ? ('R$ ' . number_format((float)$new,2,',','.')) : null;
+                    }
+                    $diff[ucfirst($k)] = ['old' => $old, 'new' => $new];
+                }
+            }
+            if (!empty($diff)) {
+                \App\Models\CashWithdrawalAudit::create([
+                    'tenant_id' => $cashWithdrawal->tenant_id,
+                    'user_id' => auth()->id(),
+                    'cash_withdrawal_id' => $cashWithdrawal->id,
+                    'action' => 'updated',
+                    'notes' => 'Sangria atualizada',
+                    'changes' => $diff,
+                ]);
+            }
+        } catch (\Throwable $e) { }
         
         // Atualizar saldo do caixa se o valor mudou
         if ($oldAmount != $v['amount']) {
@@ -173,7 +213,19 @@ class CashWithdrawalController extends Controller
         }
         
         $date = $cashWithdrawal->date->toDateString();
+        $snapshot = $cashWithdrawal->toArray();
+        $wid = $cashWithdrawal->id; $tenant = $cashWithdrawal->tenant_id;
         $cashWithdrawal->delete();
+        try {
+            \App\Models\CashWithdrawalAudit::create([
+                'tenant_id' => $tenant,
+                'user_id' => auth()->id(),
+                'cash_withdrawal_id' => $wid,
+                'action' => 'deleted',
+                'notes' => 'Sangria excluída',
+                'changes' => $snapshot,
+            ]);
+        } catch (\Throwable $e) { }
         
         // Atualizar saldo do caixa
         $dailyCash = \App\Models\DailyCash::where('tenant_id', $cashWithdrawal->tenant_id)
@@ -207,6 +259,16 @@ class CashWithdrawalController extends Controller
         $reason = $request->validate(['reason' => 'nullable|string|max:255'])['reason'] ?? null;
         
         $reversal = $cashWithdrawal->createReversal($reason);
+        try {
+            \App\Models\CashWithdrawalAudit::create([
+                'tenant_id' => $cashWithdrawal->tenant_id,
+                'user_id' => auth()->id(),
+                'cash_withdrawal_id' => $reversal->id,
+                'action' => 'reversed',
+                'notes' => 'Estorno de sangria' . ($reason ? (': ' . $reason) : ''),
+                'changes' => [ 'OriginalID' => $cashWithdrawal->id, 'Valor' => 'R$ ' . number_format((float)$reversal->amount,2,',','.') ],
+            ]);
+        } catch (\Throwable $e) { }
         
         // Atualizar saldo do caixa
         if ($dailyCash) {

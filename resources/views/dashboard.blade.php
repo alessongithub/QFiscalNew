@@ -3,13 +3,15 @@
     @php
         $brandPrimary = isset($partner) && !empty($partner->primary_color) ? $partner->primary_color : '#059669';
         $brandSecondary = isset($partner) && !empty($partner->secondary_color) ? $partner->secondary_color : '#047857';
-        $partnerLogo = isset($partner) && !empty($partner->logo_path) ? \Storage::disk('public')->url($partner->logo_path) : null;
-        $defaultLogo = asset('logo/logo_transp.png');
+        $tenant = auth()->user()->tenant;
+        $tenantLogo = $tenant && !empty($tenant->logo_path) && \Storage::disk('public')->exists($tenant->logo_path) ? asset('storage/' . ltrim($tenant->logo_path, '/')) : null;
     @endphp
     <div class="text-white rounded-lg shadow-lg p-6 mb-8" style="background: linear-gradient(90deg, {{ $brandPrimary }}, {{ $brandSecondary }});">
         <div class="flex items-center mb-2">
             <h1 class="text-3xl font-bold mr-4">Dashboard</h1>
-            <img src="{{ $partnerLogo ?? $defaultLogo }}" class="h-8 w-auto" alt="Logo">
+            @if($tenantLogo)
+                <img src="{{ $tenantLogo }}" class="h-8 w-auto" alt="Logo">
+            @endif
         </div>
         <p class="text-green-100">Gestão completa do seu negócio em um só lugar</p>
     </div>
@@ -82,7 +84,7 @@
                     <div class="font-semibold">Você está no Plano Gratuito</div>
                     <ul class="text-sm list-disc ml-5 mt-1">
                         <li>Cadastrar clientes, criar OS, orçamentos e pedidos</li>
-                        <li>Sem emissão de NF-e, boletos, PDV e emissor Delphi</li>
+                        <li>Sem emissão de NF-e, boletos e PDV</li>
                         <li>Apenas 1 usuário (administrador); sem edição de impostos</li>
                     </ul>
                 </div>
@@ -193,6 +195,11 @@
         </div>
     </div>
 
+    <!-- Widget de Armazenamento -->
+    <div class="mb-4">
+        @includeIf('components.storage-widget')
+    </div>
+
     @if(($approved && count($approved)) || ($rejected && count($rejected)))
         <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
             @if($approved && count($approved))
@@ -232,51 +239,95 @@
 
     <!-- Novidades -->
     <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
-        <div class="lg:col-span-3 bg-white rounded-lg shadow-lg p-6">
-            <h3 class="text-lg font-semibold text-gray-800 mb-4">Novidades</h3>
+        <div class="lg:col-span-3 bg-white rounded-lg shadow-lg overflow-hidden">
+            <div class="p-6 border-b bg-gradient-to-r from-green-50 to-emerald-50">
+                <h3 class="text-xl font-bold text-gray-800 flex items-center gap-2">
+                    <svg class="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path>
+                    </svg>
+                    Novidades
+                </h3>
+            </div>
             @php
                 $newsItems = \App\Models\News::where('active',true)
                     ->orderByDesc('published_at')
                     ->take(5)->get();
                 if ($newsItems->isEmpty()) {
                     $newsItems = collect([
-                        (object)['title'=>'Novo módulo de Calendário','body'=>'Agenda integrada com A Receber/A Pagar e eventos.','image_url'=>null,'link_url'=>null,'published_at'=>now()],
-                        (object)['title'=>'Relatórios com impressão','body'=>'Relatórios por período com versão para imprimir.','image_url'=>null,'link_url'=>null,'published_at'=>now()->subDay()],
-                        (object)['title'=>'Vendas: Orçamentos e Pedidos','body'=>'Cadastre orçamentos e converta em pedidos.','image_url'=>null,'link_url'=>null,'published_at'=>now()->subDays(2)],
+                        (object)['title'=>'Novo módulo de Calendário','content'=>'Agenda integrada com A Receber/A Pagar e eventos.','image_url'=>null,'link_url'=>null,'published_at'=>now()],
+                        (object)['title'=>'Relatórios com impressão','content'=>'Relatórios por período com versão para imprimir.','image_url'=>null,'link_url'=>null,'published_at'=>now()->subDay()],
+                        (object)['title'=>'Vendas: Orçamentos e Pedidos','content'=>'Cadastre orçamentos e converta em pedidos.','image_url'=>null,'link_url'=>null,'published_at'=>now()->subDays(2)],
                     ]);
                 }
             @endphp
-            <div x-data="{ i: 0, total: {{ $newsItems->count() }}, next(){ this.i = (this.i+1)%this.total }, prev(){ this.i = (this.i-1+this.total)%this.total }, init(){ this.$nextTick(()=>{ if(this.total>1){ setInterval(()=>this.next(), 5000) } }) } }" class="relative">
+            <div x-data="{ i: 0, total: {{ $newsItems->count() }}, next(){ this.i = (this.i+1)%this.total }, prev(){ this.i = (this.i-1+this.total)%this.total }, init(){ this.$nextTick(()=>{ if(this.total>1){ setInterval(()=>this.next(), 8000) } }) } }" class="relative">
                 <div class="overflow-hidden">
                     @foreach($newsItems as $idx => $n)
-                        <div x-show="i === {{ $idx }}" x-transition class="border rounded p-3 min-h-[150px]">
-                            <div class="flex gap-4">
-                                @if(!empty($n->image_url))
-                                    <img src="{{ $n->image_url }}" class="w-32 h-24 object-cover rounded" />
+                        @php
+                            $newsContent = $n->body ?? $n->content ?? '';
+                            $newsImage = $n->image_url ?? null;
+                            $newsLink = $n->link_url ?? null;
+                        @endphp
+                        <div x-show="i === {{ $idx }}" x-transition:enter="transition ease-out duration-300" x-transition:enter-start="opacity-0 transform translate-x-4" x-transition:enter-end="opacity-100 transform translate-x-0" x-transition:leave="transition ease-in duration-200" x-transition:leave-start="opacity-100 transform translate-x-0" x-transition:leave-end="opacity-0 transform -translate-x-4" class="p-6">
+                            <div class="flex flex-col md:flex-row gap-6">
+                                @if($newsImage)
+                                    <div class="md:w-1/3 flex-shrink-0">
+                                        <div class="w-full h-48 md:h-56 overflow-hidden rounded-lg shadow-md hover:shadow-lg transition-shadow bg-gray-100" style="background-image: url('{{ $newsImage }}'); background-size: 100% 100%; background-position: center; background-repeat: no-repeat;">
+                                            <img src="{{ $newsImage }}" alt="{{ $n->title }}" class="opacity-0 w-full h-full" onerror="this.parentElement.style.backgroundImage='none'; this.src='data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' width=\'400\' height=\'300\'%3E%3Crect fill=\'%23f3f4f6\' width=\'400\' height=\'300\'/%3E%3Ctext fill=\'%239ca3af\' font-family=\'sans-serif\' font-size=\'20\' dy=\'10.5\' font-weight=\'bold\' x=\'50%25\' y=\'50%25\' text-anchor=\'middle\'%3ESem imagem%3C/text%3E%3C/svg%3E'; this.classList.remove('opacity-0');" />
+                                        </div>
+                                    </div>
                                 @endif
-                                <div class="flex-1">
-                                    <div class="text-sm text-gray-500">{{ optional($n->published_at)->format('d/m/Y') }}</div>
-                                    <div class="font-semibold mb-1">{{ $n->title }}</div>
-                                    @if(!empty($n->body))
-                                        <div class="text-sm text-gray-700 line-clamp-3">{{ $n->body }}</div>
-                                    @endif
-                                    @if(!empty($n->link_url))
-                                        <a href="{{ $n->link_url }}" target="_blank" class="text-green-700 text-sm hover:underline">Saiba mais</a>
+                                <div class="flex-1 flex flex-col justify-between">
+                                    <div>
+                                        <div class="flex items-center gap-2 mb-2">
+                                            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z"></path>
+                                            </svg>
+                                            <span class="text-sm text-gray-500">{{ optional($n->published_at)->format('d/m/Y') }}</span>
+                                        </div>
+                                        <h4 class="text-xl font-bold text-gray-800 mb-3 hover:text-green-600 transition-colors">{{ $n->title }}</h4>
+                                        @if($newsContent)
+                                            <div class="text-gray-700 leading-relaxed mb-4 prose prose-sm max-w-none">
+                                                {!! $newsContent !!}
+                                            </div>
+                                        @endif
+                                    </div>
+                                    @if($newsLink)
+                                        <div>
+                                            <a href="{{ $newsLink }}" target="_blank" rel="noopener noreferrer" class="inline-flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium shadow-sm hover:shadow-md">
+                                                <span>Saiba mais</span>
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path>
+                                                </svg>
+                                            </a>
+                                        </div>
                                     @endif
                                 </div>
                             </div>
                         </div>
                     @endforeach
                 </div>
-                <div class="flex items-center justify-between mt-2" x-show="total>1">
-                    <button @click="prev()" class="px-3 py-1 bg-gray-100 rounded hover:bg-gray-200">Anterior</button>
-                    <div class="space-x-1">
-                        @foreach($newsItems as $idx => $n)
-                            <span class="inline-block w-2 h-2 rounded-full" :class="i==={{ $idx }} ? 'bg-green-600' : 'bg-gray-300'"></span>
-                        @endforeach
+                @if($newsItems->count() > 1)
+                    <div class="flex items-center justify-between px-6 py-4 bg-gray-50 border-t">
+                        <button @click="prev()" type="button" class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium text-gray-700 shadow-sm">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path>
+                            </svg>
+                            Anterior
+                        </button>
+                        <div class="flex items-center gap-2">
+                            @foreach($newsItems as $idx => $n)
+                                <button @click="i = {{ $idx }}" type="button" class="transition-all duration-200" :class="i === {{ $idx }} ? 'w-8 h-2 bg-green-600 rounded-full' : 'w-2 h-2 bg-gray-300 rounded-full hover:bg-gray-400'"></button>
+                            @endforeach
+                        </div>
+                        <button @click="next()" type="button" class="flex items-center gap-2 px-4 py-2 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors text-sm font-medium text-gray-700 shadow-sm">
+                            Próximo
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path>
+                            </svg>
+                        </button>
                     </div>
-                    <button @click="next()" class="px-3 py-1 bg-gray-100 rounded hover:bg-gray-200">Próximo</button>
-                </div>
+                @endif
             </div>
         </div>
     </div>

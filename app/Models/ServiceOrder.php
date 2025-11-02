@@ -80,6 +80,7 @@ class ServiceOrder extends Model
     public function updatedBy() { return $this->belongsTo(User::class, 'updated_by'); }
     public function quotedBy() { return $this->belongsTo(User::class, 'quoted_by'); }
     public function statusLogs() { return $this->hasMany(ServiceOrderStatusLog::class)->orderBy('changed_at', 'desc'); }
+    public function audits() { return $this->hasMany(ServiceOrderAudit::class)->orderBy('created_at', 'desc'); }
     public function occurrences() { return $this->hasMany(ServiceOrderOccurrence::class)->orderBy('created_at', 'desc'); }
     public function deliveredBy() { return $this->belongsTo(User::class, 'delivered_by'); }
     public function finalizedBy() { return $this->belongsTo(User::class, 'finalized_by'); }

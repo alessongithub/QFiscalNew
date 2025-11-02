@@ -1,3 +1,3 @@
-started_at=2025-10-15 13:03:27
+started_at=2025-10-30 15:00:13
 features=impostos_no_item;status_ext;payload_logs
-exe=C:\xampp\htdocs\Emissor\qfiscal\DelphiEmissor\Win32\Debug\Emissor.exe
+exe=C:\xampp-novo\htdocs\emissor\qfiscal\DelphiEmissor\Win32\Debug\Emissor.exe

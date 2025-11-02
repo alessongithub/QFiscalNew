@@ -7,9 +7,11 @@ use App\Models\Category;
 use App\Models\Supplier;
 use App\Models\TenantTaxConfig;
 use Illuminate\Http\Request;
+use App\Traits\StorageLimitCheck;
 
 class ProductController extends Controller
 {
+    use StorageLimitCheck;
     public function index(Request $request)
     {
         abort_unless(auth()->user()->hasPermission('products.view'), 403);
@@ -190,8 +192,47 @@ class ProductController extends Controller
         }
         $validated['active'] = $request->boolean('active', true);
         
+        // Verificar limite de storage de dados antes de criar
+        $estimatedSize = 5120; // ~5 KB estimado por produto
+        if (!$this->checkStorageLimit('data', $estimatedSize)) {
+            return back()->withErrors([
+                'storage' => $this->getStorageLimitErrorMessage('data')
+            ])->withInput();
+        }
+        
+        // Verificar limite de arquivos se houver upload de imagem
+        if ($request->hasFile('image')) {
+            $file = $request->file('image');
+            $fileSize = $file->getSize();
+            
+            if (!$this->checkStorageLimit('files', $fileSize)) {
+                return back()->withErrors([
+                    'image' => $this->getStorageLimitErrorMessage('files')
+                ])->withInput();
+            }
+        }
+        
         try {
-            Product::create($validated);
+            $product = Product::create($validated);
+            // Auditoria de criação
+            \App\Models\ProductAudit::create([
+                'tenant_id' => auth()->user()->tenant_id,
+                'user_id' => auth()->id(),
+                'product_id' => $product->id,
+                'action' => 'created',
+                'changes' => [
+                    'name' => $product->name,
+                    'sku' => $product->sku,
+                    'price' => $product->price,
+                    'ncm' => $product->ncm,
+                    'active' => $product->active,
+                ],
+                'notes' => 'Produto criado',
+            ]);
+            
+            // Invalidar cache de storage após criar
+            $this->invalidateStorageCache();
+            
             return redirect()->route('products.index')->with('success', 'Produto criado com sucesso!');
         } catch (\Illuminate\Database\QueryException $e) {
             // Tratar erros específicos do banco de dados
@@ -340,7 +381,28 @@ class ProductController extends Controller
         $validated['active'] = $request->boolean('active', true);
         
         try {
+            $before = $product->replicate();
             $product->update($validated);
+
+            // Auditoria de atualização (diferenças relevantes)
+            $fields = ['name','sku','price','ncm','cest','cfop','origin','csosn','cst_icms','cst_pis','cst_cofins','aliquota_icms','aliquota_pis','aliquota_cofins','active'];
+            $changes = [];
+            foreach ($fields as $f) {
+                if ($before->$f != $product->$f) {
+                    $changes[$f] = ['old' => $before->$f, 'new' => $product->$f];
+                }
+            }
+            if (!empty($changes)) {
+                \App\Models\ProductAudit::create([
+                    'tenant_id' => auth()->user()->tenant_id,
+                    'user_id' => auth()->id(),
+                    'product_id' => $product->id,
+                    'action' => 'updated',
+                    'changes' => $changes,
+                    'notes' => 'Produto atualizado',
+                ]);
+            }
+
             return redirect()->route('products.index')->with('success', 'Produto atualizado com sucesso!');
         } catch (\Illuminate\Database\QueryException $e) {
             // Tratar erros específicos do banco de dados
@@ -387,7 +449,16 @@ class ProductController extends Controller
         }
         // Sem saídas: remover movimentos (entradas/ajustes) e excluir produto
         \App\Models\StockMovement::where('tenant_id', $tenantId)->where('product_id', $product->id)->delete();
+        $snapshot = ['name' => $product->name, 'sku' => $product->sku, 'price' => $product->price, 'active' => $product->active];
         $product->delete();
+        \App\Models\ProductAudit::create([
+            'tenant_id' => auth()->user()->tenant_id,
+            'user_id' => auth()->id(),
+            'product_id' => null,
+            'action' => 'deleted',
+            'changes' => $snapshot,
+            'notes' => 'Produto excluído',
+        ]);
         return redirect()->route('products.index')->with('success', 'Produto excluído com sucesso!');
     }
 
@@ -395,8 +466,17 @@ class ProductController extends Controller
     {
         abort_unless(auth()->user()->hasPermission('products.edit'), 403);
         abort_unless($product->tenant_id === auth()->user()->tenant_id, 403);
+        $prev = (bool)$product->active;
         $product->active = !$product->active;
         $product->save();
+        \App\Models\ProductAudit::create([
+            'tenant_id' => auth()->user()->tenant_id,
+            'user_id' => auth()->id(),
+            'product_id' => $product->id,
+            'action' => $product->active ? 'activated' : 'deactivated',
+            'changes' => ['active' => ['old' => $prev, 'new' => (bool)$product->active]],
+            'notes' => $product->active ? 'Produto ativado' : 'Produto desativado',
+        ]);
         return back()->with('success', $product->active ? 'Produto ativado.' : 'Produto desativado.');
     }
 

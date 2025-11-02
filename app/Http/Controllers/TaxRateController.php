@@ -12,7 +12,7 @@ class TaxRateController extends Controller
         abort_unless(auth()->user()->hasPermission('tax_rates.view'), 403);
         $tenantId = auth()->user()->tenant_id;
         
-        $query = TaxRate::where('tenant_id', $tenantId);
+        $query = TaxRate::where('tenant_id', $tenantId)->with(['createdBy', 'updatedBy']);
         
         // Filtro por nome
         if ($request->filled('name')) {
@@ -129,7 +129,23 @@ class TaxRateController extends Controller
         }
         $data['tenant_id'] = $tenantId;
         $data['ativo'] = (bool)($data['ativo'] ?? true);
-        TaxRate::create($data);
+        $data['created_by'] = auth()->id();
+        $taxRate = TaxRate::create($data);
+        
+        // Registrar auditoria de criação
+        \App\Models\TaxRateAudit::create([
+            'tax_rate_id' => $taxRate->id,
+            'user_id' => auth()->id(),
+            'action' => 'created',
+            'notes' => 'Configuração tributária criada',
+            'changes' => [
+                'name' => $taxRate->name,
+                'tipo_nota' => $taxRate->tipo_nota,
+                'ncm' => $taxRate->ncm,
+                'cfop' => $taxRate->cfop,
+            ],
+        ]);
+        
         return redirect()->route('tax_rates.index')->with('success', 'Alíquota criada.');
     }
 
@@ -193,15 +209,64 @@ class TaxRateController extends Controller
             }
             unset($data[$percentKey]);
         }
+        
+        // Capturar valores originais ANTES de qualquer modificação
+        $tax_rate->refresh(); // Garantir que temos os valores atuais do banco
+        $originalValues = $tax_rate->getAttributes();
+        
+        // Tratar campo 'ativo' separadamente
+        $data['ativo'] = (bool)($data['ativo'] ?? $tax_rate->ativo);
+        
+        // Comparar valores antes e depois
+        $changedFields = [];
+        foreach ($data as $key => $newValue) {
+            $oldValue = $originalValues[$key] ?? null;
+            
+            // Comparação mais robusta
+            if ($oldValue != $newValue) {
+                $changedFields[$key] = [
+                    'old' => $oldValue,
+                    'new' => $newValue,
+                ];
+            }
+        }
+        
+        // Atualizar o modelo
         $tax_rate->fill($data);
-        $tax_rate->ativo = (bool)($data['ativo'] ?? $tax_rate->ativo);
+        $tax_rate->updated_by = auth()->id();
         $tax_rate->save();
+        
+        // Registrar auditoria de atualização se houver mudanças (desconsiderar campos internos)
+        unset($changedFields['updated_by'], $changedFields['updated_at']);
+        if (!empty($changedFields)) {
+            \App\Models\TaxRateAudit::create([
+                'tax_rate_id' => $tax_rate->id,
+                'user_id' => auth()->id(),
+                'action' => 'updated',
+                'notes' => 'Configuração tributária atualizada',
+                'changes' => $changedFields,
+            ]);
+        }
+        
         return redirect()->route('tax_rates.index')->with('success', 'Alíquota atualizada.');
     }
 
     public function destroy(TaxRate $tax_rate)
     {
         abort_unless(auth()->user()->hasPermission('tax_rates.delete') && $tax_rate->tenant_id === auth()->user()->tenant_id, 403);
+        
+        // Registrar auditoria de exclusão antes de deletar
+        \App\Models\TaxRateAudit::create([
+            'tax_rate_id' => $tax_rate->id,
+            'user_id' => auth()->id(),
+            'action' => 'deleted',
+            'notes' => 'Configuração tributária excluída',
+            'changes' => [
+                'name' => $tax_rate->name,
+                'tipo_nota' => $tax_rate->tipo_nota,
+            ],
+        ]);
+        
         $tax_rate->delete();
         return redirect()->route('tax_rates.index')->with('success', 'Alíquota excluída.');
     }
@@ -227,7 +292,20 @@ class TaxRateController extends Controller
     public function show(TaxRate $tax_rate)
     {
         abort_unless(auth()->user()->hasPermission('tax_rates.view') && $tax_rate->tenant_id === auth()->user()->tenant_id, 403);
+        $tax_rate->load(['createdBy', 'updatedBy']);
         return view('tax_rates.show', ['rate' => $tax_rate]);
+    }
+
+    public function history(TaxRate $tax_rate)
+    {
+        abort_unless(auth()->user()->hasPermission('tax_rates.view') && $tax_rate->tenant_id === auth()->user()->tenant_id, 403);
+        
+        $audits = \App\Models\TaxRateAudit::where('tax_rate_id', $tax_rate->id)
+            ->with('user')
+            ->orderBy('created_at', 'desc')
+            ->get();
+        
+        return view('tax_rates.history', compact('tax_rate', 'audits'));
     }
 }
 

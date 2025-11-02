@@ -9,9 +9,11 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redirect;
 use Illuminate\View\View;
+use App\Traits\StorageLimitCheck;
 
 class ProfileController extends Controller
 {
+    use StorageLimitCheck;
     /**
      * Display the user's profile form.
      */
@@ -52,6 +54,7 @@ class ProfileController extends Controller
         // Update tenant data
         $tenant = $request->user()->tenant;
         if ($tenant) {
+            $before = $tenant->replicate();
             $tenant->fill([
                 'phone' => $validated['phone'] ?? $tenant->phone,
                 'zip_code' => $validated['zip_code'] ?? $tenant->zip_code,
@@ -68,16 +71,36 @@ class ProfileController extends Controller
                 $file = $request->file('tenant_logo');
                 if ($file->isValid()) {
                     try {
+                        $fileSize = $file->getSize();
+                        
+                        // Verificar limite de storage de arquivos ANTES de fazer upload
+                        if (!$this->checkStorageLimit('files', $fileSize)) {
+                            return back()->withErrors([
+                                'tenant_logo' => $this->getStorageLimitErrorMessage('files')
+                            ]);
+                        }
+                        
                         // Remove old logo if exists
                         if ($tenant->logo_path) {
                             \Storage::disk('public')->delete($tenant->logo_path);
                         }
                         
                         $path = $file->store('tenants/logos/'.$tenant->id, 'public');
+                        
+                        // Invalidar cache de storage após upload
+                        $this->invalidateStorageCache();
+                        $oldLogo = $tenant->logo_path;
                         $tenant->logo_path = $path;
                         Log::info('Tenant logo stored', [
                             'tenant_id' => $tenant->id,
                             'path' => $path,
+                        ]);
+                        \App\Models\ProfileAudit::create([
+                            'tenant_id' => $tenant->id,
+                            'user_id' => $request->user()->id,
+                            'action' => 'updated_logo',
+                            'changes' => [ 'logo_path' => ['old' => $oldLogo, 'new' => $path], 'size' => $fileSize ],
+                            'notes' => 'Troca de logo do tenant',
                         ]);
                     } catch (\Exception $e) {
                         Log::error('Error uploading tenant logo', [
@@ -95,6 +118,23 @@ class ProfileController extends Controller
             }
 
             $tenant->save();
+            // Auditoria de dados do perfil
+            $fields = ['phone','zip_code','address','number','complement','neighborhood','city','state'];
+            $changes = [];
+            foreach ($fields as $f) {
+                if ($before->$f != $tenant->$f) {
+                    $changes[$f] = ['old' => $before->$f, 'new' => $tenant->$f];
+                }
+            }
+            if (!empty($changes)) {
+                \App\Models\ProfileAudit::create([
+                    'tenant_id' => $tenant->id,
+                    'user_id' => $request->user()->id,
+                    'action' => 'updated_profile',
+                    'changes' => $changes,
+                    'notes' => 'Atualização de dados do perfil',
+                ]);
+            }
         }
 
         return Redirect::route('profile.edit')->with('status', 'profile-updated');

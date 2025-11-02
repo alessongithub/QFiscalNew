@@ -60,6 +60,19 @@ class CarrierController extends Controller
         $v['tenant_id'] = auth()->user()->tenant_id;
         $v['active'] = (bool)($request->boolean('active'));
         Carrier::create($v);
+        try {
+            $created = Carrier::where('tenant_id', $v['tenant_id'])->latest('id')->first();
+            if ($created) {
+                \App\Models\CarrierAudit::create([
+                    'tenant_id' => $created->tenant_id,
+                    'user_id' => auth()->id(),
+                    'carrier_id' => $created->id,
+                    'action' => 'created',
+                    'notes' => 'Transportadora criada: ' . ($created->name ?? ''),
+                    'changes' => $created->toArray(),
+                ]);
+            }
+        } catch (\Throwable $e) { }
         return redirect()->route('carriers.index')->with('success', 'Transportadora criada.');
     }
 
@@ -94,7 +107,29 @@ class CarrierController extends Controller
             'active' => 'nullable|boolean',
         ]);
         $v['active'] = (bool)($request->boolean('active'));
+        $before = $carrier->getOriginal();
         $carrier->update($v);
+        try {
+            $after = $carrier->fresh();
+            $diff = [];
+            foreach (array_keys($v) as $k) {
+                $old = $before[$k] ?? null;
+                $new = $after->$k ?? null;
+                if ((string)$old !== (string)$new) {
+                    $diff[$k] = ['old' => $old, 'new' => $new];
+                }
+            }
+            if (!empty($diff)) {
+                \App\Models\CarrierAudit::create([
+                    'tenant_id' => $carrier->tenant_id,
+                    'user_id' => auth()->id(),
+                    'carrier_id' => $carrier->id,
+                    'action' => 'updated',
+                    'notes' => 'Transportadora atualizada',
+                    'changes' => $diff,
+                ]);
+            }
+        } catch (\Throwable $e) { }
         return redirect()->route('carriers.index')->with('success', 'Transportadora atualizada.');
     }
 
@@ -102,7 +137,19 @@ class CarrierController extends Controller
     {
         abort_unless(auth()->user()->hasPermission('carriers.delete'), 403);
         abort_unless($carrier->tenant_id === auth()->user()->tenant_id, 403);
+        $snapshot = $carrier->toArray();
+        $tenantId = $carrier->tenant_id; $carrierId = $carrier->id;
         $carrier->delete();
+        try {
+            \App\Models\CarrierAudit::create([
+                'tenant_id' => $tenantId,
+                'user_id' => auth()->id(),
+                'carrier_id' => $carrierId,
+                'action' => 'deleted',
+                'notes' => 'Transportadora excluída',
+                'changes' => $snapshot,
+            ]);
+        } catch (\Throwable $e) { }
         return redirect()->route('carriers.index')->with('success', 'Transportadora excluída.');
     }
 }

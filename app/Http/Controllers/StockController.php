@@ -78,10 +78,36 @@ class StockController extends Controller
         $product = Product::findOrFail($validated['product_id']);
         abort_unless($product->tenant_id === $tenantId, 403);
 
-        StockMovement::create([
+        $prevEntry = StockMovement::where('tenant_id', $tenantId)->where('product_id', $product->id)->whereIn('type', ['entry','adjustment'])->sum('quantity');
+        $prevExit = StockMovement::where('tenant_id', $tenantId)->where('product_id', $product->id)->where('type', 'exit')->sum('quantity');
+        $prevBalance = (float)$prevEntry - (float)$prevExit;
+
+        $movement = StockMovement::create([
             ...$validated,
             'tenant_id' => $tenantId,
             'created_by' => auth()->id(),
+            'user_id' => auth()->id(),
+            // Compat: alguns schemas exigem 'reason' NOT NULL
+            'reason' => $validated['note'] ?? ($validated['document'] ?? 'manual'),
+        ]);
+
+        // Auditoria
+        $newEntry = $prevEntry + (in_array($validated['type'], ['entry','adjustment']) ? (float)$validated['quantity'] : 0);
+        $newExit = $prevExit + ($validated['type'] === 'exit' ? (float)$validated['quantity'] : 0);
+        $newBalance = $newEntry - $newExit;
+        \App\Models\StockAudit::create([
+            'tenant_id' => $tenantId,
+            'user_id' => auth()->id(),
+            'product_id' => $product->id,
+            'action' => $validated['type'],
+            'details' => [
+                'quantity' => (float)$validated['quantity'],
+                'prev_balance' => $prevBalance,
+                'new_balance' => $newBalance,
+                'document' => $validated['document'] ?? null,
+                'note' => $validated['note'] ?? null,
+                'movement_id' => $movement->id,
+            ],
         ]);
 
         return redirect()->route('stock.index')->with('success', 'Movimento registrado.');
@@ -110,7 +136,28 @@ class StockController extends Controller
         ]);
         $product = Product::findOrFail($validated['product_id']);
         abort_unless($product->tenant_id === auth()->user()->tenant_id, 403);
+        $tenantId = auth()->user()->tenant_id;
+        $prevEntry = StockMovement::where('tenant_id', $tenantId)->where('product_id', $movement->product_id)->whereIn('type', ['entry','adjustment'])->sum('quantity');
+        $prevExit = StockMovement::where('tenant_id', $tenantId)->where('product_id', $movement->product_id)->where('type', 'exit')->sum('quantity');
+        $prevBalance = (float)$prevEntry - (float)$prevExit;
+
         $movement->update($validated);
+
+        $newEntry = StockMovement::where('tenant_id', $tenantId)->where('product_id', $movement->product_id)->whereIn('type', ['entry','adjustment'])->sum('quantity');
+        $newExit = StockMovement::where('tenant_id', $tenantId)->where('product_id', $movement->product_id)->where('type', 'exit')->sum('quantity');
+        $newBalance = (float)$newEntry - (float)$newExit;
+        \App\Models\StockAudit::create([
+            'tenant_id' => $tenantId,
+            'user_id' => auth()->id(),
+            'product_id' => $movement->product_id,
+            'action' => 'adjustment',
+            'details' => [
+                'prev_balance' => $prevBalance,
+                'new_balance' => $newBalance,
+                'movement_id' => $movement->id,
+                'updated_fields' => array_keys($validated),
+            ],
+        ]);
         return redirect()->route('stock.index')->with('success', 'Movimento atualizado.');
     }
 
@@ -207,7 +254,12 @@ class StockController extends Controller
             return back()->with('error', 'Estorno automático não disponível para ajustes.');
         }
 
-        \App\Models\StockMovement::create([
+        $tenantId = auth()->user()->tenant_id;
+        $prevEntry = StockMovement::where('tenant_id', $tenantId)->where('product_id', $movement->product_id)->whereIn('type', ['entry','adjustment'])->sum('quantity');
+        $prevExit = StockMovement::where('tenant_id', $tenantId)->where('product_id', $movement->product_id)->where('type', 'exit')->sum('quantity');
+        $prevBalance = (float)$prevEntry - (float)$prevExit;
+
+        $rev = \App\Models\StockMovement::create([
             'tenant_id' => $movement->tenant_id,
             'product_id' => $movement->product_id,
             'type' => $reverseType,
@@ -215,6 +267,24 @@ class StockController extends Controller
             'unit_price' => $movement->unit_price,
             'document' => $movement->document,
             'note' => 'Estorno automático do movimento #'.$movement->id,
+            'reason' => 'reverse',
+            'user_id' => auth()->id(),
+        ]);
+
+        $newEntry = StockMovement::where('tenant_id', $tenantId)->where('product_id', $movement->product_id)->whereIn('type', ['entry','adjustment'])->sum('quantity');
+        $newExit = StockMovement::where('tenant_id', $tenantId)->where('product_id', $movement->product_id)->where('type', 'exit')->sum('quantity');
+        $newBalance = (float)$newEntry - (float)$newExit;
+        \App\Models\StockAudit::create([
+            'tenant_id' => $tenantId,
+            'user_id' => auth()->id(),
+            'product_id' => $movement->product_id,
+            'action' => 'reverse',
+            'details' => [
+                'reversed_movement_id' => $movement->id,
+                'new_movement_id' => $rev->id,
+                'prev_balance' => $prevBalance,
+                'new_balance' => $newBalance,
+            ],
         ]);
 
         return back()->with('success', 'Estorno registrado no Kardex.');

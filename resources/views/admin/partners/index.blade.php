@@ -36,12 +36,24 @@
 							</td>
 						<td>{{ $p->active ? 'Sim' : 'Não' }}</td>
 						<td class="text-right">
-								<a href="{{ route('admin.partners.show', $p) }}" class="px-3 py-1 bg-gray-100 text-gray-800 rounded">Ver</a>
-								<a href="{{ route('admin.partners.edit', $p) }}" class="px-3 py-1 bg-blue-50 text-blue-700 rounded">Editar</a>
-							<form action="{{ route('admin.partners.destroy', $p) }}" method="POST" class="inline" onsubmit="return confirm('Remover parceiro?')">
-								@csrf @method('DELETE')
-								<button class="px-3 py-1 bg-red-50 text-red-700 rounded">Excluir</button>
-							</form>
+							<div class="flex items-center gap-2 justify-end">
+								<a href="{{ route('admin.partners.show', $p) }}" class="px-3 py-1 bg-gray-100 text-gray-800 rounded hover:bg-gray-200">Ver</a>
+								<a href="{{ route('admin.partners.edit', $p) }}" class="px-3 py-1 bg-blue-50 text-blue-700 rounded hover:bg-blue-100">Editar</a>
+								@if($p->contact_email)
+								<form action="{{ route('admin.partners.invite', $p) }}" method="POST" class="inline" onsubmit="return confirm('Reenviar convite por email para {{ $p->contact_email }}?')">
+									@csrf
+									<button type="submit" class="px-3 py-1 bg-green-50 text-green-700 rounded hover:bg-green-100" title="Reenviar convite">
+										<svg class="w-4 h-4 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+											<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path>
+										</svg>
+									</button>
+								</form>
+								@endif
+								<form action="{{ route('admin.partners.destroy', $p) }}" method="POST" class="inline" onsubmit="return confirm('Remover parceiro?')">
+									@csrf @method('DELETE')
+									<button class="px-3 py-1 bg-red-50 text-red-700 rounded hover:bg-red-100">Excluir</button>
+								</form>
+							</div>
 						</td>
 					</tr>
 				@empty

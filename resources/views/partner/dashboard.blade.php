@@ -9,6 +9,48 @@
 		</div>
 	</x-slot>
 
+	@if(session('success'))
+		<div class="mb-4 p-3 bg-green-50 text-green-800 rounded">{{ session('success') }}</div>
+	@endif
+
+	@if(isset($partner) && $partner && $partner->logo_path)
+		<div class="mb-6 flex justify-center">
+			<img src="{{ asset('storage/' . $partner->logo_path) }}" alt="{{ $partner->name }}" class="h-20 w-auto">
+		</div>
+	@endif
+
+	@if(isset($todayTenants) && $todayTenants->count() > 0)
+		<div class="mb-6 p-4 bg-blue-50 border-l-4 border-blue-500 rounded shadow">
+			<div class="flex items-center justify-between mb-3">
+				<div class="flex items-center gap-2">
+					<svg class="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+						<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path>
+					</svg>
+					<h3 class="text-lg font-semibold text-blue-800">Novos Clientes Cadastrados Hoje ({{ $todayTenants->count() }})</h3>
+				</div>
+			</div>
+			<div class="space-y-2">
+				@foreach($todayTenants as $tenant)
+					<div class="bg-white p-3 rounded border border-blue-200">
+						<div class="flex items-center justify-between">
+							<div>
+								<div class="font-medium text-gray-800">{{ $tenant->fantasy_name ?? $tenant->name }}</div>
+								<div class="text-sm text-gray-600">{{ $tenant->cnpj }}</div>
+								<div class="text-xs text-gray-500 mt-1">Cadastrado às {{ $tenant->created_at->format('H:i') }}</div>
+							</div>
+							<div class="text-right">
+								<div class="text-sm font-medium text-blue-600">{{ optional($tenant->plan)->name ?? 'Gratuito' }}</div>
+								<span class="inline-flex items-center px-2 py-0.5 text-xs rounded {{ $tenant->active ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-700' }}">
+									{{ $tenant->active ? 'Ativo' : 'Inativo' }}
+								</span>
+							</div>
+						</div>
+					</div>
+				@endforeach
+			</div>
+		</div>
+	@endif
+
 	<div class="grid grid-cols-1 md:grid-cols-4 gap-4">
 		<div class="bg-white p-4 rounded shadow">
 			<div class="text-sm text-gray-600">Clientes (tenants)</div>
@@ -118,7 +160,7 @@
     <!-- Lista de Tenants do parceiro -->
     <div class="mt-8 bg-white rounded shadow">
         <div class="p-4 border-b flex items-center justify-between">
-            <div class="font-semibold text-gray-800">Tenants</div>
+            <div class="font-semibold text-gray-800">Clientes</div>
             <form method="GET" action="{{ route('partner.dashboard') }}" class="flex items-center gap-2">
                 <input type="text" name="q" value="{{ $q ?? '' }}" placeholder="Buscar por nome, fantasia, CNPJ, email, cidade..." class="border rounded p-2 w-80">
                 <button class="px-3 py-2 bg-gray-800 text-white rounded">Buscar</button>

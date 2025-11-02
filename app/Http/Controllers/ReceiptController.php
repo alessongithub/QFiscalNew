@@ -5,7 +5,10 @@ namespace App\Http\Controllers;
 use App\Models\Receipt;
 use App\Models\Client;
 use App\Models\Receivable;
+use App\Models\SmtpConfig;
 use Illuminate\Http\Request;
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception as PHPMailerException;
 
 class ReceiptController extends Controller
 {
@@ -87,6 +90,16 @@ class ReceiptController extends Controller
             'notes'=>$v['notes'] ?? null,
             'status'=>'issued',
         ]);
+        try {
+            \App\Models\ReceiptAudit::create([
+                'tenant_id' => $tenantId,
+                'user_id' => auth()->id(),
+                'receipt_id' => $receipt->id,
+                'action' => 'created',
+                'notes' => 'Recibo emitido',
+                'changes' => $receipt->toArray(),
+            ]);
+        } catch (\Throwable $e) { }
         // Integração com Contas a Receber (entra no caixa do dia)
         $rec = Receivable::create([
             'tenant_id' => $tenantId,
@@ -127,7 +140,43 @@ class ReceiptController extends Controller
         ]);
         $client = Client::findOrFail($v['client_id']);
         abort_unless($client->tenant_id === auth()->user()->tenant_id, 403);
+        $before = $receipt->getOriginal();
         $receipt->update($v);
+        try {
+            $after = $receipt->fresh();
+            $diff = [];
+            $fmt = function($key, $val) use ($after) {
+                if ($val === null || $val === '') return '';
+                switch ($key) {
+                    case 'issue_date':
+                        try { return \Carbon\Carbon::parse($val)->format('d/m/Y'); } catch (\Throwable $e) { return (string)$val; }
+                    case 'amount':
+                        return 'R$ ' . number_format((float)$val, 2, ',', '.');
+                    case 'status':
+                        return $val === 'issued' ? 'Emitido' : ($val === 'canceled' ? 'Cancelado' : $val);
+                    case 'client_id':
+                        $c = $after->client ?: (\App\Models\Client::find($val));
+                        return $c?->name ?? ('Cliente #'.$val);
+                    default:
+                        return (string)$val;
+                }
+            };
+            foreach (array_keys($v) as $k) {
+                $o = $before[$k] ?? null; $n = $after->$k ?? null;
+                $on = $fmt($k,$o); $nn = $fmt($k,$n);
+                if ($on !== $nn) { $diff[ucfirst(str_replace('_',' ',$k))] = ['old'=>$on,'new'=>$nn]; }
+            }
+            if (!empty($diff)) {
+                \App\Models\ReceiptAudit::create([
+                    'tenant_id' => auth()->user()->tenant_id,
+                    'user_id' => auth()->id(),
+                    'receipt_id' => $receipt->id,
+                    'action' => 'updated',
+                    'notes' => 'Recibo atualizado',
+                    'changes' => $diff,
+                ]);
+            }
+        } catch (\Throwable $e) { }
         // Sincroniza Contas a Receber vinculado ao recibo
         if ($receipt->receivable_id) {
             $r = Receivable::where('tenant_id', auth()->user()->tenant_id)->find($receipt->receivable_id);
@@ -207,12 +256,23 @@ class ReceiptController extends Controller
         
         \Log::info('Iniciando atualização do recibo');
         // Cancelar o recibo ao invés de deletar
+        $oldStatus = $receipt->status;
         $receipt->update([
             'status' => 'canceled',
             'canceled_at' => now(),
             'canceled_by' => auth()->user()->name,
             'cancel_reason' => $v['cancel_reason'],
         ]);
+        try {
+            \App\Models\ReceiptAudit::create([
+                'tenant_id' => auth()->user()->tenant_id,
+                'user_id' => auth()->id(),
+                'receipt_id' => $receipt->id,
+                'action' => 'canceled',
+                'notes' => 'Motivo: ' . $v['cancel_reason'],
+                'changes' => ['Status' => ['old' => ($oldStatus === 'issued' ? 'Emitido' : $oldStatus), 'new' => 'Cancelado']],
+            ]);
+        } catch (\Throwable $e) { }
         \Log::info('Recibo atualizado com sucesso', [
             'receipt_id' => $receipt->id,
             'new_status' => 'canceled',
@@ -248,6 +308,175 @@ class ReceiptController extends Controller
         abort_unless($receipt->tenant_id === auth()->user()->tenant_id, 403);
         $receipt->load('client','tenant');
         return view('receipts.print', compact('receipt'));
+    }
+
+    public function emailForm(Receipt $receipt)
+    {
+        abort_unless(auth()->user()->hasPermission('receipts.view'), 403);
+        abort_unless($receipt->tenant_id === auth()->user()->tenant_id, 403);
+        $receipt->load(['client','tenant']);
+        $to = optional($receipt->client)->email;
+        $subject = 'Recibo #' . $receipt->number . ' - ' . ($receipt->description ?: 'Recibo');
+        return view('receipts.email', compact('receipt','to','subject'));
+    }
+
+    public function sendEmail(Request $request, Receipt $receipt)
+    {
+        abort_unless(auth()->user()->hasPermission('receipts.view'), 403);
+        abort_unless($receipt->tenant_id === auth()->user()->tenant_id, 403);
+        
+        $v = $request->validate([
+            'to' => 'required|email',
+            'subject' => 'required|string|max:255',
+            'message' => 'nullable|string',
+        ]);
+
+        $receipt->load(['client','tenant']);
+
+        // Renderizar template
+        $html = trim((string)($v['message'] ?? ''));
+        if ($html === '') {
+            $html = view('receipts.emails._receipt', [ 'receipt' => $receipt ])->render();
+        }
+
+        // SMTP ativo
+        $active = SmtpConfig::where('is_active', true)->first();
+        if (!$active) {
+            $active = new SmtpConfig([
+                'host' => env('MAIL_HOST', '127.0.0.1'),
+                'port' => (int) env('MAIL_PORT', 2525),
+                'username' => env('MAIL_USERNAME'),
+                'password' => env('MAIL_PASSWORD'),
+                'encryption' => env('MAIL_ENCRYPTION', 'tls'),
+                'from_address' => env('MAIL_FROM_ADDRESS'),
+                'from_name' => env('MAIL_FROM_NAME', config('app.name')),
+                'is_active' => false,
+            ]);
+        }
+
+        $host = (string)($active->host ?? '');
+        $port = (int)($active->port ?? 0);
+        $username = (string)($active->username ?? '');
+        $password = (string)($active->password ?? '');
+        $encryption = strtolower((string)($active->encryption ?? 'tls'));
+        $fromAddress = (string)($active->from_address ?? $username);
+        $fromName = (string)($receipt->tenant->fantasy_name ?? $receipt->tenant->name ?? $active->from_name ?? config('app.name'));
+
+        // Gerar PDF do recibo para anexar
+        $pdfContent = null;
+        try {
+            $receipt->loadMissing(['client','tenant']);
+            // Usar view PDF limpa sem layout
+            $pdfHtml = view('receipts.pdf', compact('receipt'))->render();
+            if (class_exists(\Barryvdh\DomPDF\Facade\Pdf::class)) {
+                $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadHTML($pdfHtml)->setPaper('a4');
+                $pdfContent = $pdf->output();
+            } elseif (class_exists(\Barryvdh\DomPDF\Facades\Pdf::class)) {
+                $pdf = \Barryvdh\DomPDF\Facades\Pdf::loadHTML($pdfHtml)->setPaper('a4');
+                $pdfContent = $pdf->output();
+            } else {
+                \Log::warning('Biblioteca PDF não encontrada para gerar recibo');
+            }
+        } catch (\Throwable $pdfError) {
+            \Log::error('Erro ao gerar PDF do recibo', [
+                'receipt_id' => $receipt->id,
+                'error' => $pdfError->getMessage(),
+                'trace' => $pdfError->getTraceAsString()
+            ]);
+        }
+
+        $mailer = new PHPMailer(true);
+        try {
+            \App\Http\Controllers\Admin\EmailTestController::configureMailer($mailer, $host, $port, $username, $password, $encryption, $fromAddress, $fromName);
+            $mailer->addAddress($v['to']);
+            $mailer->isHTML(true);
+            $mailer->Subject = $v['subject'];
+            $mailer->Body = $html;
+            $mailer->AltBody = strip_tags($mailer->Body);
+            
+            // Anexar PDF se foi gerado com sucesso
+            if ($pdfContent) {
+                $mailer->addStringAttachment($pdfContent, 'Recibo_' . $receipt->number . '.pdf', 'base64', 'application/pdf');
+            }
+            
+            $mailer->send();
+            
+            // Registrar auditoria de envio de email
+            try {
+                \App\Models\ReceiptAudit::create([
+                    'tenant_id' => $receipt->tenant_id,
+                    'user_id' => auth()->id(),
+                    'receipt_id' => $receipt->id,
+                    'action' => 'email_sent',
+                    'notes' => 'Email enviado para ' . $v['to'],
+                    'changes' => [
+                        'to' => $v['to'],
+                        'subject' => $v['subject'],
+                        'has_pdf' => !empty($pdfContent),
+                    ],
+                ]);
+            } catch (\Throwable $auditError) {
+                \Log::warning('Erro ao registrar auditoria de email', [
+                    'receipt_id' => $receipt->id,
+                    'error' => $auditError->getMessage()
+                ]);
+            }
+            
+            return back()->with('success','E-mail enviado com sucesso.');
+        } catch (PHPMailerException $e) {
+            // Fallback automático: troca porta/cripto e tenta novamente
+            if (stripos($e->getMessage(), 'Could not connect to SMTP host') !== false || stripos($e->getMessage(), 'Failed to connect') !== false) {
+                try {
+                    $altEnc = ($encryption === 'ssl') ? 'tls' : 'ssl';
+                    $altPort = ($altEnc === 'ssl') ? 465 : 587;
+                    $mailer = new PHPMailer(true);
+                    \App\Http\Controllers\Admin\EmailTestController::configureMailer($mailer, $host, $altPort, $username, $password, $altEnc, $fromAddress, $fromName);
+                    $mailer->addAddress($v['to']);
+                    $mailer->isHTML(true);
+                    $mailer->Subject = $v['subject'];
+                    $mailer->Body = $html;
+                    $mailer->AltBody = strip_tags($mailer->Body);
+                    
+                    // Anexar PDF se foi gerado com sucesso
+                    if ($pdfContent) {
+                        $mailer->addStringAttachment($pdfContent, 'Recibo_' . $receipt->number . '.pdf', 'base64', 'application/pdf');
+                    }
+                    
+                    $mailer->send();
+                    
+                    // Registrar auditoria de envio de email (fallback)
+                    try {
+                        \App\Models\ReceiptAudit::create([
+                            'tenant_id' => $receipt->tenant_id,
+                            'user_id' => auth()->id(),
+                            'receipt_id' => $receipt->id,
+                            'action' => 'email_sent',
+                            'notes' => 'Email enviado para ' . $v['to'] . ' (fallback)',
+                            'changes' => [
+                                'to' => $v['to'],
+                                'subject' => $v['subject'],
+                                'has_pdf' => !empty($pdfContent),
+                            ],
+                        ]);
+                    } catch (\Throwable $auditError) {
+                        \Log::warning('Erro ao registrar auditoria de email', [
+                            'receipt_id' => $receipt->id,
+                            'error' => $auditError->getMessage()
+                        ]);
+                    }
+                    
+                    return back()->with('success','E-mail enviado com sucesso (fallback).');
+                } catch (PHPMailerException $e2) {
+                    $meta = " host={$host} port={$altPort} enc={$altEnc} user={$username} from={$fromAddress}";
+                    $full = 'Falha ao enviar: ' . $e->getMessage() . ' | Tentativa alternativa: ' . $e2->getMessage() . $meta;
+                    return back()->withErrors(['email' => $full])->withInput();
+                }
+            } else {
+                $meta = " host={$host} port={$port} enc={$encryption} user={$username} from={$fromAddress}";
+                $full = 'Falha ao enviar: ' . $e->getMessage() . $meta;
+                return back()->withErrors(['email' => $full])->withInput();
+            }
+        }
     }
 }
 

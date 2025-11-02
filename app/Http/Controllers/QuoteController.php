@@ -13,9 +13,11 @@ use App\Models\SmtpConfig;
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception as PHPMailerException;
 use App\Http\Controllers\Admin\EmailTestController;
+use App\Traits\StorageLimitCheck;
 
 class QuoteController extends Controller
 {
+    use StorageLimitCheck;
     public function index(Request $request)
     {
         abort_unless(auth()->user()->hasPermission('quotes.view'), 403);
@@ -164,6 +166,16 @@ class QuoteController extends Controller
         $discountTotal = (float)($v['discount_total'] ?? 0);
         $finalTotal = $total - $discountTotal;
         
+        // Verificar limite de storage de dados antes de criar
+        // Estimativa: orçamento base (~2 KB) + cada item (~1 KB)
+        $itemsCount = count($items);
+        $estimatedSize = 2048 + ($itemsCount * 1024);
+        if (!$this->checkStorageLimit('data', $estimatedSize)) {
+            return back()->withErrors([
+                'storage' => $this->getStorageLimitErrorMessage('data')
+            ])->withInput();
+        }
+        
         $quote = Quote::create([
             'tenant_id'=>$tenantId,
             'client_id'=>$v['client_id'],
@@ -189,6 +201,9 @@ class QuoteController extends Controller
         foreach ($items as $it) {
             QuoteItem::create([...$it, 'tenant_id'=>$tenantId, 'quote_id'=>$quote->id]);
         }
+
+        // Invalidar cache de storage após criar
+        $this->invalidateStorageCache();
 
         // Registrar auditoria de criação
         \App\Models\QuoteAudit::create([
@@ -739,6 +754,12 @@ class QuoteController extends Controller
     {
         abort_unless(auth()->user()->hasPermission('quotes.view'), 403);
         abort_unless($quote->tenant_id === auth()->user()->tenant_id, 403);
+        
+        // Bloquear envio de email se orçamento foi aprovado (virou pedido)
+        if ($quote->status === 'approved') {
+            return back()->with('error', 'Orçamento aprovado e convertido em pedido. Use o email do pedido para comunicação.');
+        }
+        
         $quote->load(['client','items','tenant']);
         $to = optional($quote->client)->email;
         $subject = 'Orçamento #' . $quote->number . ' - ' . ($quote->title ?: 'Detalhes do Orçamento');
@@ -749,6 +770,12 @@ class QuoteController extends Controller
     {
         abort_unless(auth()->user()->hasPermission('quotes.view'), 403);
         abort_unless($quote->tenant_id === auth()->user()->tenant_id, 403);
+        
+        // Bloquear envio de email se orçamento foi aprovado (virou pedido)
+        if ($quote->status === 'approved') {
+            return back()->with('error', 'Orçamento aprovado e convertido em pedido. Use o email do pedido para comunicação.');
+        }
+        
         $v = $request->validate([
             'to' => 'required|email',
             'subject' => 'required|string|max:255',
@@ -903,6 +930,28 @@ class QuoteController extends Controller
             }
             
             $mailer->send();
+            
+            // Registrar auditoria de envio de email
+            try {
+                \App\Models\QuoteAudit::create([
+                    'quote_id' => $quote->id,
+                    'user_id' => auth()->id(),
+                    'action' => 'email_sent',
+                    'notes' => 'Email enviado para ' . $v['to'],
+                    'changes' => [
+                        'to' => $v['to'],
+                        'subject' => $v['subject'],
+                        'template' => $v['template'] ?? 'custom',
+                        'has_pdf' => !empty($pdfContent),
+                    ],
+                ]);
+            } catch (\Throwable $auditError) {
+                \Log::warning('Erro ao registrar auditoria de email', [
+                    'quote_id' => $quote->id,
+                    'error' => $auditError->getMessage()
+                ]);
+            }
+            
             return back()->with('success','E-mail enviado com sucesso.');
         } catch (PHPMailerException $e) {
             try {
@@ -922,6 +971,28 @@ class QuoteController extends Controller
                 }
                 
                 $mailer->send();
+                
+                // Registrar auditoria de envio de email (fallback)
+                try {
+                    \App\Models\QuoteAudit::create([
+                        'quote_id' => $quote->id,
+                        'user_id' => auth()->id(),
+                        'action' => 'email_sent',
+                        'notes' => 'Email enviado para ' . $v['to'] . ' (fallback)',
+                        'changes' => [
+                            'to' => $v['to'],
+                            'subject' => $v['subject'],
+                            'template' => $v['template'] ?? 'custom',
+                            'has_pdf' => !empty($pdfContent),
+                        ],
+                    ]);
+                } catch (\Throwable $auditError) {
+                    \Log::warning('Erro ao registrar auditoria de email', [
+                        'quote_id' => $quote->id,
+                        'error' => $auditError->getMessage()
+                    ]);
+                }
+                
                 return back()->with('success','E-mail enviado com sucesso (fallback).');
             } catch (PHPMailerException $e2) {
                 return back()->withErrors(['email'=>'Falha ao enviar: '.$e->getMessage().' | Tentativa alternativa: '.$e2->getMessage()])->withInput();

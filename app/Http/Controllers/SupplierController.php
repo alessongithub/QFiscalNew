@@ -82,7 +82,14 @@ class SupplierController extends Controller
         $v['tenant_id'] = auth()->user()->tenant_id;
         $v['active'] = $request->boolean('active', true);
         
-        Supplier::create($v);
+        $sup = Supplier::create($v);
+        \App\Models\SupplierAudit::create([
+            'tenant_id' => auth()->user()->tenant_id,
+            'user_id' => auth()->id(),
+            'supplier_id' => $sup->id,
+            'action' => 'created',
+            'changes' => ['name' => $sup->name, 'cpf_cnpj' => $sup->cpf_cnpj, 'active' => $sup->active],
+        ]);
         return redirect()->route('suppliers.index')->with('success', 'Fornecedor criado com sucesso.');
     }
 
@@ -141,7 +148,20 @@ class SupplierController extends Controller
         }
         
         $v['active'] = $request->boolean('active', true);
+        $before = $supplier->replicate();
         $supplier->update($v);
+        $fields = ['name','trade_name','cpf_cnpj','email','phone','address','number','city','state','zip_code','active'];
+        $changes = [];
+        foreach ($fields as $f) { if ($before->$f != $supplier->$f) { $changes[$f] = ['old'=>$before->$f,'new'=>$supplier->$f]; } }
+        if (!empty($changes)) {
+            \App\Models\SupplierAudit::create([
+                'tenant_id' => auth()->user()->tenant_id,
+                'user_id' => auth()->id(),
+                'supplier_id' => $supplier->id,
+                'action' => 'updated',
+                'changes' => $changes,
+            ]);
+        }
         return redirect()->route('suppliers.index')->with('success', 'Fornecedor atualizado com sucesso.');
     }
 
@@ -168,6 +188,13 @@ class SupplierController extends Controller
         // Se o fornecedor está sendo usado em algum lugar, apenas desativar
         if ($productsCount > 0 || $payablesCount > 0 || $inboundInvoicesCount > 0) {
             $supplier->update(['active' => false]);
+            \App\Models\SupplierAudit::create([
+                'tenant_id' => auth()->user()->tenant_id,
+                'user_id' => auth()->id(),
+                'supplier_id' => $supplier->id,
+                'action' => 'deactivated',
+                'changes' => ['active' => ['old'=>true,'new'=>false]],
+            ]);
             
             $message = 'Fornecedor desativado com sucesso. ';
             if ($productsCount > 0) {
@@ -185,7 +212,15 @@ class SupplierController extends Controller
         }
         
         // Se não está sendo usado, permitir exclusão
+        $snap = ['name' => $supplier->name, 'cpf_cnpj' => $supplier->cpf_cnpj];
         $supplier->delete();
+        \App\Models\SupplierAudit::create([
+            'tenant_id' => auth()->user()->tenant_id,
+            'user_id' => auth()->id(),
+            'supplier_id' => null,
+            'action' => 'deleted',
+            'changes' => $snap,
+        ]);
         return redirect()->route('suppliers.index')->with('success', 'Fornecedor excluído com sucesso.');
     }
     

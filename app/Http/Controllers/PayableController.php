@@ -114,7 +114,7 @@ class PayableController extends Controller
             return back()->withErrors(['supplier_name' => 'Informe um fornecedor (selecionado) ou um nome avulso.'])->withInput();
         }
 
-        Payable::create([
+        $created = Payable::create([
             'tenant_id' => $tenantId,
             'supplier_id' => $supplier?->id,
             'supplier_name' => $validated['supplier_name'] ?? ($supplier?->name ?? null),
@@ -126,6 +126,19 @@ class PayableController extends Controller
             'status' => 'open',
             'created_by' => auth()->id(),
         ]);
+
+        // Audit: created
+        try {
+            \App\Models\FinanceAudit::create([
+                'tenant_id' => $tenantId,
+                'user_id' => auth()->id(),
+                'entity_type' => 'payable',
+                'entity_id' => $created->id,
+                'action' => 'created',
+                'notes' => 'Conta a pagar lançada: ' . ($created->description ?? ''),
+                'changes' => $created->toArray(),
+            ]);
+        } catch (\Throwable $e) { }
 
         return redirect()->route('payables.index')->with('success', 'Conta a pagar lançada.');
     }
@@ -168,7 +181,64 @@ class PayableController extends Controller
             $payable->paid_by = auth()->id();
         }
 
+        $original = $payable->getOriginal();
         $payable->update(array_merge($validated, ['updated_by' => auth()->id()]));
+        // Audit: updated (normalizado)
+        try {
+            $fresh = $payable->fresh();
+            $newValues = $fresh->toArray();
+            $fmt = function(string $key, $val) use ($fresh) {
+                if ($val === null || $val === '') return '';
+                switch ($key) {
+                    case 'due_date':
+                    case 'paid_at':
+                        try { return \Carbon\Carbon::parse($val)->format('d/m/Y'); } catch (\Throwable $e) { return (string)$val; }
+                    case 'amount':
+                        return 'R$ ' . number_format((float)$val, 2, ',', '.');
+                    case 'status':
+                        $map = ['open' => 'Em aberto', 'partial' => 'Parcial', 'paid' => 'Pago', 'canceled' => 'Cancelado', 'reversed' => 'Estornado'];
+                        return $map[$val] ?? (string)$val;
+                    case 'payment_method':
+                        $map = ['cash' => 'Dinheiro', 'card' => 'Cartão', 'pix' => 'Pix'];
+                        return $map[$val] ?? (string)$val;
+                    case 'supplier_id':
+                        $sup = $fresh->supplier ?: (\App\Models\Supplier::find($val));
+                        return $sup?->name ?? ('Fornecedor #' . $val);
+                    default:
+                        return (string)$val;
+                }
+            };
+            $diff = [];
+            foreach (array_keys($validated) as $k) {
+                $oldRaw = $original[$k] ?? null;
+                $newRaw = $newValues[$k] ?? null;
+                $oldNorm = $fmt($k, $oldRaw);
+                $newNorm = $fmt($k, $newRaw);
+                if ($oldNorm !== $newNorm) { $diff[$this->humanField($k)] = ['old' => $oldNorm, 'new' => $newNorm]; }
+            }
+            if (!empty($diff)) {
+                \App\Models\FinanceAudit::create([
+                    'tenant_id' => auth()->user()->tenant_id,
+                    'user_id' => auth()->id(),
+                    'entity_type' => 'payable',
+                    'entity_id' => $payable->id,
+                    'action' => 'updated',
+                    'notes' => 'Conta a pagar atualizada',
+                    'changes' => $diff,
+                ]);
+            } else {
+                // Ainda assim registrar a edição (sem diferenças materiais detectadas)
+                \App\Models\FinanceAudit::create([
+                    'tenant_id' => auth()->user()->tenant_id,
+                    'user_id' => auth()->id(),
+                    'entity_type' => 'payable',
+                    'entity_id' => $payable->id,
+                    'action' => 'updated',
+                    'notes' => 'Conta a pagar atualizada (sem alterações relevantes) ',
+                    'changes' => null,
+                ]);
+            }
+        } catch (\Throwable $e) { }
         return redirect()->route('payables.index')->with('success', 'Conta a pagar atualizada.');
     }
 
@@ -191,6 +261,8 @@ class PayableController extends Controller
             'cancel_reason' => 'required|string|min:10|max:500',
         ]);
         
+        $oldStatus = $payable->status;
+        $prevStatus = $payable->status;
         $payable->update([
             'status' => 'canceled',
             'updated_by' => auth()->id(),
@@ -198,6 +270,18 @@ class PayableController extends Controller
             'canceled_at' => now(),
             'canceled_by' => auth()->id(),
         ]);
+        // Audit: canceled
+        try {
+            \App\Models\FinanceAudit::create([
+                'tenant_id' => auth()->user()->tenant_id,
+                'user_id' => auth()->id(),
+                'entity_type' => 'payable',
+                'entity_id' => $payable->id,
+                'action' => 'canceled',
+                'notes' => 'Motivo: ' . ($validated['cancel_reason'] ?? ''),
+                'changes' => ['status' => ['old' => ($prevStatus === 'open' ? 'Em aberto' : $prevStatus), 'new' => 'Cancelado']],
+            ]);
+        } catch (\Throwable $e) { }
         
         return redirect()->route('payables.index')->with('success', 'Conta a pagar cancelada com sucesso.');
     }
@@ -212,12 +296,25 @@ class PayableController extends Controller
             'paid_at' => 'nullable|date',
         ]);
 
+        $oldStatus = $payable->status;
         $payable->status = 'paid';
         $payable->payment_method = $data['payment_method'] ?? $payable->payment_method;
         $payable->paid_at = isset($data['paid_at']) ? $data['paid_at'] : now();
         $payable->paid_by = auth()->id();
         $payable->updated_by = auth()->id();
         $payable->save();
+        // Audit: paid
+        try {
+            \App\Models\FinanceAudit::create([
+                'tenant_id' => auth()->user()->tenant_id,
+                'user_id' => auth()->id(),
+                'entity_type' => 'payable',
+                'entity_id' => $payable->id,
+                'action' => 'paid',
+                'notes' => 'Baixa manual',
+                'changes' => [ 'status' => ['old' => $oldStatus, 'new' => 'Pago'], 'payment_method' => ($payable->payment_method ? (['cash'=>'Dinheiro','card'=>'Cartão','pix'=>'Pix'][$payable->payment_method] ?? $payable->payment_method) : null) ],
+            ]);
+        } catch (\Throwable $e) { }
 
         return back()->with('success', 'Conta baixada como paga.');
     }
@@ -264,7 +361,36 @@ class PayableController extends Controller
             'created_by' => auth()->id(),
         ]);
 
+        // Audit: reversed
+        try {
+            \App\Models\FinanceAudit::create([
+                'tenant_id' => auth()->user()->tenant_id,
+                'user_id' => auth()->id(),
+                'entity_type' => 'payable',
+                'entity_id' => $payable->id,
+                'action' => 'reversed',
+                'notes' => 'Motivo: ' . ($validated['reverse_reason'] ?? ''),
+                'changes' => ['status' => ['old' => 'paid', 'new' => 'reversed']],
+            ]);
+        } catch (\Throwable $e) { }
+
         return redirect()->route('payables.index')->with('success', 'Estorno criado com sucesso. O pagamento original foi preservado para auditoria.');
+    }
+
+    private function humanField(string $key): string
+    {
+        $map = [
+            'supplier_id' => 'Fornecedor',
+            'supplier_name' => 'Fornecedor',
+            'description' => 'Descrição',
+            'amount' => 'Valor',
+            'due_date' => 'Vencimento',
+            'status' => 'Status',
+            'payment_method' => 'Forma de pagamento',
+            'document_number' => 'Documento',
+            'paid_at' => 'Pago em',
+        ];
+        return $map[$key] ?? ucfirst(str_replace('_',' ',$key));
     }
 }
 

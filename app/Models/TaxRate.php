@@ -29,6 +29,8 @@ class TaxRate extends Model
         'icmsst_aliquota',
         'icmsst_reducao_bc',
         'ativo',
+        'created_by',
+        'updated_by',
     ];
 
     protected $casts = [
@@ -49,6 +51,16 @@ class TaxRate extends Model
     public function tenant()
     {
         return $this->belongsTo(Tenant::class);
+    }
+
+    public function createdBy()
+    {
+        return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function updatedBy()
+    {
+        return $this->belongsTo(User::class, 'updated_by');
     }
 }
 

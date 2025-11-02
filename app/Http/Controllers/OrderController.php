@@ -14,9 +14,11 @@ use App\Models\SmtpConfig;
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception as PHPMailerException;
 use App\Http\Controllers\Admin\EmailTestController;
+use App\Traits\StorageLimitCheck;
 
 class OrderController extends Controller
 {
+    use StorageLimitCheck;
     /**
      * Valida se o pedido possui dados mínimos para emissão de NF-e.
      * Retorna array de mensagens de erro (vazio quando sem erros).
@@ -333,6 +335,28 @@ class OrderController extends Controller
             }
             
             $mailer->send();
+            
+            // Registrar auditoria de envio de email
+            try {
+                \App\Models\OrderAudit::create([
+                    'order_id' => $order->id,
+                    'user_id' => auth()->id(),
+                    'action' => 'email_sent',
+                    'notes' => 'Email enviado para ' . $v['to'],
+                    'changes' => [
+                        'to' => $v['to'],
+                        'subject' => $v['subject'],
+                        'template' => $v['template'] ?? 'custom',
+                        'has_pdf' => !empty($pdfContent),
+                    ],
+                ]);
+            } catch (\Throwable $auditError) {
+                \Log::warning('Erro ao registrar auditoria de email', [
+                    'order_id' => $order->id,
+                    'error' => $auditError->getMessage()
+                ]);
+            }
+            
             return back()->with('success','E-mail enviado com sucesso.');
         } catch (PHPMailerException $e) {
             try {
@@ -352,6 +376,28 @@ class OrderController extends Controller
                 }
                 
                 $mailer->send();
+                
+                // Registrar auditoria de envio de email (fallback)
+                try {
+                    \App\Models\OrderAudit::create([
+                        'order_id' => $order->id,
+                        'user_id' => auth()->id(),
+                        'action' => 'email_sent',
+                        'notes' => 'Email enviado para ' . $v['to'] . ' (fallback)',
+                        'changes' => [
+                            'to' => $v['to'],
+                            'subject' => $v['subject'],
+                            'template' => $v['template'] ?? 'custom',
+                            'has_pdf' => !empty($pdfContent),
+                        ],
+                    ]);
+                } catch (\Throwable $auditError) {
+                    \Log::warning('Erro ao registrar auditoria de email', [
+                        'order_id' => $order->id,
+                        'error' => $auditError->getMessage()
+                    ]);
+                }
+                
                 return back()->with('success','E-mail enviado com sucesso (fallback).');
             } catch (PHPMailerException $e2) {
                 return back()->withErrors(['email'=>'Falha ao enviar: '.$e->getMessage().' | Tentativa alternativa: '.$e2->getMessage()])->withInput();
@@ -461,6 +507,17 @@ class OrderController extends Controller
             $headerDiscount = max(0.0, (float)($request->input('discount_total', 0)));
         }
         $netTotal = max(0.0, $subtotal - $itemsDiscountSum - $headerDiscount);
+        
+        // Verificar limite de storage de dados antes de criar
+        // Estimativa: pedido base (~2 KB) + cada item (~1 KB)
+        $itemsCount = count($items);
+        $estimatedSize = 2048 + ($itemsCount * 1024);
+        if (!$this->checkStorageLimit('data', $estimatedSize)) {
+            return back()->withErrors([
+                'storage' => $this->getStorageLimitErrorMessage('data')
+            ])->withInput();
+        }
+        
         $order = Order::create([
             'tenant_id'=>$tenantId,
             'client_id'=>$v['client_id'],
@@ -474,6 +531,9 @@ class OrderController extends Controller
         ]);
 
         foreach ($items as $it) { OrderItem::create([...$it,'tenant_id'=>$tenantId,'order_id'=>$order->id]); }
+
+        // Invalidar cache de storage após criar
+        $this->invalidateStorageCache();
 
         // Registrar auditoria de criação
         \App\Models\OrderAudit::create([
@@ -563,7 +623,10 @@ class OrderController extends Controller
         abort_unless(auth()->user()->hasPermission('orders.edit'), 403);
         abort_unless(auth()->user()->hasPermission('orders.freight.assign'), 403);
         abort_unless($order->tenant_id === auth()->user()->tenant_id, 403);
-        if (in_array(strtolower((string)$order->status), ['fulfilled','canceled'], true)) {
+        if (in_array(strtolower((string)$order->status), ['fulfilled','canceled','partial_returned'], true)) {
+            if (strtolower((string)$order->status) === 'partial_returned') {
+                return redirect()->route('orders.edit', $order)->with('error', 'Pedido com devolução parcial não permite definir pagamento. Reabra o pedido para permitir edições.');
+            }
             return redirect()->route('orders.edit', $order)->with('error', 'Pedido neste status não permite definir pagamento.');
         }
         $tenantId = auth()->user()->tenant_id;
@@ -585,16 +648,26 @@ class OrderController extends Controller
     {
         abort_unless(auth()->user()->hasPermission('orders.edit'), 403);
         abort_unless($order->tenant_id === auth()->user()->tenant_id, 403);
-        // Bloquear alterações quando o pedido já está finalizado e não foi reaberto
+        // Bloquear alterações quando o pedido já está finalizado, cancelado ou com devolução parcial
         $statusNorm = strtolower(trim((string) $order->status));
-        if (in_array($statusNorm, ['fulfilled','canceled'], true)) {
+        if (in_array($statusNorm, ['fulfilled','canceled','partial_returned'], true)) {
+            if ($statusNorm === 'partial_returned') {
+                return back()->with('error', 'Pedido com devolução parcial não pode ser alterado. Reabra o pedido para permitir edições.');
+            }
             return back()->with('error', 'Pedido finalizado/cancelado não pode ser alterado. Reabra o pedido para editar.');
         }
         $clientOnly = $request->boolean('client_only');
 
         if ($clientOnly) {
+            // Bloquear alteração mesmo via client_only se estiver com devolução parcial
+            $statusNormCheck = strtolower(trim((string) $order->status));
+            if ($statusNormCheck === 'partial_returned') {
+                return back()->with('error', 'Pedido com devolução parcial não pode ser alterado. Reabra o pedido para permitir edições.');
+            }
+            
             $vv = $request->validate(['client_id' => 'required|exists:clients,id']);
             // Permitir alterar cliente mesmo com pedido finalizado, sem refazer baixa de estoque ou financeiro
+            // (mas NÃO se estiver com partial_returned - já bloqueado acima)
             $order->client_id = (int) $vv['client_id'];
             
             // Também processar desconto se enviado
@@ -631,9 +704,12 @@ class OrderController extends Controller
             return back()->with('success','Cliente e desconto do pedido atualizados.');
         }
 
-        // Bloquear alterações plenas em pedidos finalizados ou cancelados
+        // Bloquear alterações plenas em pedidos finalizados, cancelados ou com devolução parcial
         $statusNorm = strtolower(trim((string) $order->status));
-        if (in_array($statusNorm, ['fulfilled','canceled'], true)) {
+        if (in_array($statusNorm, ['fulfilled','canceled','partial_returned'], true)) {
+            if ($statusNorm === 'partial_returned') {
+                return back()->with('error', 'Pedido com devolução parcial não pode ser alterado. Reabra o pedido para permitir edições.');
+            }
             return back()->with('error', 'Pedido neste status não pode ser alterado.');
         }
         if (!empty($order->nfe_issued_at)) {
@@ -959,8 +1035,11 @@ class OrderController extends Controller
     {
         abort_unless(auth()->user()->hasPermission('orders.edit'), 403);
         abort_unless($order->tenant_id === auth()->user()->tenant_id, 403);
-        // Bloquear inclusão em finalizado/cancelado
-        if (in_array(strtolower((string)$order->status), ['fulfilled','canceled'], true)) {
+        // Bloquear inclusão em finalizado/cancelado ou com devolução parcial
+        if (in_array(strtolower((string)$order->status), ['fulfilled','canceled','partial_returned'], true)) {
+            if (strtolower((string)$order->status) === 'partial_returned') {
+                return back()->with('error', 'Pedido com devolução parcial não permite adicionar itens. Reabra o pedido para permitir edições.');
+            }
             return back()->with('error','Pedido neste status não permite adicionar itens.');
         }
 
@@ -1114,7 +1193,10 @@ class OrderController extends Controller
     {
         abort_unless(auth()->user()->hasPermission('orders.edit'), 403);
         abort_unless($order->tenant_id === auth()->user()->tenant_id && $item->order_id === $order->id, 403);
-        if (in_array(strtolower((string)$order->status), ['fulfilled','canceled'], true)) {
+        if (in_array(strtolower((string)$order->status), ['fulfilled','canceled','partial_returned'], true)) {
+            if (strtolower((string)$order->status) === 'partial_returned') {
+                return back()->with('error', 'Pedido com devolução parcial não permite remover itens. Reabra o pedido para permitir edições.');
+            }
             return back()->with('error','Pedido neste status não permite remover itens.');
         }
 
@@ -1169,16 +1251,59 @@ class OrderController extends Controller
         return redirect()->route('orders.edit', $order)->with('success','Item removido.');
     }
 
-    public function print(Order $order)
+    public function print(Order $order, Request $request)
     {
         abort_unless(auth()->user()->hasPermission('orders.view'), 403);
         abort_unless($order->tenant_id === auth()->user()->tenant_id, 403);
         $order->loadMissing(['client','items','tenant']);
         
-        // Rateio por item (vDesc, vFrete, vSeg, vOutro) para impressão
+        // Usa accessor returned_quantity do OrderItem para calcular quantidades devolvidas
+        // Criar coleção de itens ajustados (com quantidades após devolução)
+        $adjustedItems = collect();
+        foreach ($order->items as $item) {
+            // Usa accessor returned_quantity do OrderItem
+            $returnedQty = $item->returned_quantity;
+            $originalQty = (float) $item->quantity;
+            $remainingQty = max(0, round($originalQty - $returnedQty, 3));
+            
+            // Se item foi totalmente devolvido, não incluir no print
+            if ($remainingQty <= 0.001) {
+                continue;
+            }
+            
+            // Calcular desconto ajustado (proporcional ou zerado - decidir política)
+            $originalDiscount = (float) ($item->discount_value ?? 0);
+            $adjustedDiscount = 0.0; // Por enquanto, zeramos desconto após devolução (pode mudar)
+            
+            // Se quisermos proporcional: $adjustedDiscount = $originalQty > 0 ? ($remainingQty / $originalQty) * $originalDiscount : 0;
+            
+            // Calcular total ajustado
+            $gross = $remainingQty * (float)$item->unit_price;
+            $adjustedLineTotal = max(0, round($gross - $adjustedDiscount, 2));
+            
+            // Criar item ajustado (clonar mas com valores ajustados)
+            $adjustedItem = (object) [
+                'id' => $item->id,
+                'name' => $item->name,
+                'description' => $item->description,
+                'quantity' => $remainingQty,
+                'original_quantity' => $originalQty, // Para referência se necessário
+                'returned_quantity' => $returnedQty,
+                'unit' => $item->unit,
+                'unit_price' => $item->unit_price,
+                'discount_value' => $adjustedDiscount,
+                'addition_value' => $item->addition_value ?? 0,
+                'line_total' => $adjustedLineTotal,
+                'product_id' => $item->product_id,
+            ];
+            
+            $adjustedItems->push($adjustedItem);
+        }
+        
+        // Rateio por item (vDesc, vFrete, vSeg, vOutro) para impressão - usar itens ajustados
         $rateioItems = [];
-        if ($order->items && $order->items->count() > 0) {
-            $items = $order->items;
+        if ($adjustedItems->count() > 0) {
+            $items = $adjustedItems;
             $weights = [];
             $grosses = [];
             $itemDescValues = [];
@@ -1262,16 +1387,33 @@ class OrderController extends Controller
                 ];
             }
         }
+        // Calcular totais ajustados (após devoluções)
+        $adjustedTotal = $adjustedItems->sum('line_total');
+        $adjustedDiscountTotal = $adjustedItems->sum('discount_value');
+        $adjustedAdditionTotal = (float)($order->addition_total ?? 0); // Manter acréscimos gerais
+        $adjustedFinalTotal = max(0, $adjustedTotal - ((float)($order->discount_total ?? 0)) + $adjustedAdditionTotal);
+        
+        // Filtrar recebíveis: nunca mostrar estornos (valores negativos) misturados com formas de pagamento
         $receivables = Receivable::where('tenant_id', auth()->user()->tenant_id)
             ->where('order_id', $order->id)
+            ->where('amount', '>', 0) // Excluir estornos (valores negativos)
             ->orderBy('due_date')
             ->get();
-        // Estimativa de tributos considerando créditos fiscais
+        
+        // Opções de impressão (pode vir via query string ou ter padrões)
+        $printOptions = [
+            'show_payment' => (bool) ($request->input('show_payment', true)),
+            'show_fiscal_info' => (bool) ($request->input('show_fiscal_info', true)),
+            'show_transport' => (bool) ($request->input('show_transport', true)),
+            'show_rateio' => (bool) ($request->input('show_rateio', false)),
+            'show_tax_estimate' => (bool) ($request->input('show_tax_estimate', false)),
+        ];
+        // Estimativa de tributos considerando créditos fiscais - usar itens ajustados
         $icms = 0.0; $pis = 0.0; $cofins = 0.0;
         $taxCreditService = app(\App\Services\TaxCreditService::class);
         $icmsSuggestions = [];
         
-        foreach ($items as $index => $it) {
+        foreach ($adjustedItems as $index => $it) {
             $line = (float) ($it->line_total ?? 0);
             if ($line <= 0) { continue; }
             $prod = $it->product_id ? Product::find($it->product_id) : null;
@@ -1289,22 +1431,25 @@ class OrderController extends Controller
                 
             if ($rate) {
                 // Base de cálculo do ICMS inclui frete/seguro/outras despesas rateados e desconta descontos
-                $vDesc = round(($itemDescValues[$index] ?? 0.0) + ($alocDescHeader[$index] ?? 0.0), 2);
-                $vOutro = round(($itemAddValues[$index] ?? 0.0) + ($alocOutros[$index] ?? 0.0) + ($alocOutroHeader[$index] ?? 0.0), 2);
+                // Usar valores do item ajustado
+                $itemDisc = (float)($it->discount_value ?? 0.0);
+                $itemAdd = (float)($it->addition_value ?? 0.0);
+                $vDesc = round($itemDisc + ($alocDescHeader[$index] ?? 0.0), 2);
+                $vOutro = round($itemAdd + ($alocOutros[$index] ?? 0.0) + ($alocOutroHeader[$index] ?? 0.0), 2);
                 $vFrete = round($alocFrete[$index] ?? 0.0, 2);
                 $vSeg = round($alocSeg[$index] ?? 0.0, 2);
-                $gross = $grosses[$index] ?? $line; // valor bruto da linha (qtd * unit)
+                $gross = (float)$it->quantity * (float)$it->unit_price; // valor bruto da linha ajustada
                 $baseIcms = max($gross - $vDesc, 0.0) + $vFrete + $vSeg + $vOutro;
                 
                 // Alíquota do produto ou da regra tributária
                 $aliquota = (float)($prod->aliquota_icms ?? $rate->icms_aliquota ?? 0);
                 
-                // Calcula ICMS considerando créditos fiscais
+                // Calcula ICMS considerando créditos fiscais - usar quantidade ajustada
                 $icmsCalculation = $taxCreditService->calculateIcmsWithCredits(
                     $prod,
                     $baseIcms,
                     $aliquota,
-                    (float)$it->quantity,
+                    (float)$it->quantity, // Quantidade já ajustada (após devolução)
                     $order->tenant_id
                 );
                 
@@ -1324,7 +1469,25 @@ class OrderController extends Controller
             }
         }
         $taxEstimate = [ 'icms' => $icms, 'pis' => $pis, 'cofins' => $cofins ];
-        return view('orders.print', compact('order','receivables','taxEstimate','rateioItems','icmsSuggestions'));
+        
+        // Passar itens ajustados para a view
+        $printData = [
+            'order' => $order,
+            'items' => $adjustedItems, // Itens ajustados (após devoluções)
+            'receivables' => $receivables,
+            'taxEstimate' => $taxEstimate,
+            'rateioItems' => $rateioItems,
+            'icmsSuggestions' => $icmsSuggestions,
+            'adjustedTotals' => [
+                'subtotal' => $adjustedTotal,
+                'discount' => $adjustedDiscountTotal,
+                'addition' => $adjustedAdditionTotal,
+                'final' => $adjustedFinalTotal,
+            ],
+            'options' => $printOptions,
+        ];
+        
+        return view('orders.print', $printData);
     }
 
     private function recalculateTotals(Order $order): void
@@ -1348,10 +1511,15 @@ class OrderController extends Controller
         abort_unless(auth()->user()->hasPermission('orders.freight.assign'), 403);
         abort_unless($order->tenant_id === auth()->user()->tenant_id, 403);
 
-        // Bloquear re-finalização: se já estiver finalizado, exigir reabertura antes de qualquer nova finalização
+        // Bloquear re-finalização: se já estiver finalizado ou com devolução parcial, exigir reabertura antes de qualquer nova finalização
         $statusNorm = strtolower((string) $order->status);
         if ($statusNorm === 'fulfilled') {
             return back()->with('error', 'Este pedido já está finalizado. Para alterar ou finalizar novamente, reabra o pedido primeiro.');
+        }
+        
+        // Bloquear finalização quando o pedido está com devolução parcial
+        if ($statusNorm === 'partial_returned') {
+            return back()->with('error', 'Pedido com devolução parcial não pode ser finalizado. Reabra o pedido primeiro para permitir edições e finalização.');
         }
 
         // Impedir duplicidade
@@ -1710,11 +1878,8 @@ class OrderController extends Controller
         // Permissão específica para reabrir
         abort_unless(auth()->user()->hasPermission('orders.reopen') || auth()->user()->hasPermission('admin'), 403);
 
-        $latestNfe = $order->latestNfeNoteCompat;
-        $nfeStatus = strtolower((string) ($latestNfe->status ?? ''));
-        $hasSuccessfulNfe = in_array($nfeStatus, ['emitted','transmitida']);
-
-        if ($hasSuccessfulNfe || !empty($order->nfe_issued_at)) {
+        // Usa método helper canBeReopened()
+        if (!$order->canBeReopened()) {
             return back()->with('error', 'Pedido com NF-e transmitida não pode ser reaberto.');
         }
 
@@ -1722,42 +1887,23 @@ class OrderController extends Controller
         if ($order->status === 'fulfilled') {
             $v = $request->validate([
                 'justification' => 'required|string|min:10|max:500',
-                'estornar' => 'nullable|in:0,1',
             ]);
-            $estornar = (bool) ((int) ($v['estornar'] ?? 0));
 
+            // Verificar se há recebíveis (mas não estornar - financeiro já foi tratado na devolução se houver)
             $hasReceivables = \App\Models\Receivable::where('tenant_id', auth()->user()->tenant_id)
                 ->where('order_id', $order->id)
                 ->where('status','!=','canceled')
                 ->exists();
-            if ($hasReceivables && $estornar) {
-                // Estornar financeiro: pagos viram saída, abertos cancelados
-                $recs = \App\Models\Receivable::where('tenant_id', auth()->user()->tenant_id)
-                    ->where('order_id', $order->id)
-                    ->get();
-                foreach ($recs as $rec) {
-                    if ($rec->status === 'paid') {
-                        \App\Models\Payable::create([
-                            'tenant_id' => $order->tenant_id,
-                            'supplier_name' => 'Estorno Financeiro',
-                            'description' => '⚡ Estorno Automático - Reabertura Pedido #'.$order->number,
-                            'amount' => -(float)$rec->amount,
-                            'due_date' => now()->toDateString(),
-                            'status' => 'paid',
-                            'paid_at' => now(),
-                            'payment_method' => $rec->payment_method,
-                        ]);
-                    }
-                    $rec->status = 'canceled';
-                    $rec->save();
-                }
-                $order->reopen_preserve_financial = false;
-            } else {
-                // Preservar financeiro existente
-                $order->reopen_preserve_financial = $hasReceivables;
-            }
+            
+            // Preservar financeiro existente
+            $order->reopen_preserve_financial = $hasReceivables;
+            // Usa método helper getItemsWithPartialReturns()
+            $itemsWithReturns = $order->getItemsWithPartialReturns();
+            $hasPartialReturns = $itemsWithReturns->isNotEmpty();
+
             $order->status = 'open';
             $order->save();
+            
             // Log de atividade (se disponível)
             try {
                 if (class_exists(\Spatie\Activitylog\ActivitylogServiceProvider::class)) {
@@ -1783,17 +1929,301 @@ class OrderController extends Controller
                 ]
             ]);
 
-            return back()->with('success', 'Pedido reaberto para edição.');
+            // Preparar mensagem de sucesso com aviso sobre devoluções, se houver
+            $successMsg = 'Pedido reaberto para edição.';
+            if ($hasPartialReturns && count($itemsWithReturns) > 0) {
+                $itemsList = collect($itemsWithReturns)->map(function($item) {
+                    return "{$item['name']} ({$item['returned']} devolvido(s) de {$item['sold']})";
+                })->implode('; ');
+                $successMsg .= ' Atenção: Este pedido possui itens com devoluções parciais. Verifique os descontos e ajuste os itens conforme necessário: ' . $itemsList;
+            }
+
+            return back()->with('success', $successMsg)->with('items_with_returns', $itemsWithReturns);
         }
 
         return back()->with('error', 'Este pedido não está finalizado.');
+    }
+
+    /**
+     * Prepara dados de ajuste para exibição no modal de reabertura
+     * Retorna JSON com preview das mudanças que serão aplicadas
+     */
+    public function prepareReopenAdjustment(Order $order)
+    {
+        abort_unless(auth()->user()->hasPermission('orders.edit'), 403);
+        abort_unless($order->tenant_id === auth()->user()->tenant_id, 403);
+
+        // Carregar items do pedido antes de calcular devoluções
+        $order->load('items');
+        
+        // Usa método helper getItemsWithPartialReturns()
+        $itemsWithReturns = $order->getItemsWithPartialReturns();
+        
+        return response()->json([
+            'has_adjustments' => $itemsWithReturns->isNotEmpty(),
+            'items' => $itemsWithReturns->map(function($item) {
+                return [
+                    'item_id' => $item['item_id'],
+                    'name' => $item['name'],
+                    'sold' => $item['sold'],
+                    'returned' => $item['returned'],
+                    'remaining' => $item['remaining'],
+                    'has_discount' => $item['has_discount'],
+                    'discount_value' => $item['discount_value'],
+                    'unit_price' => $item['unit_price'],
+                    // Valores após ajuste
+                    'new_discount' => 0.0, // Por enquanto zeramos desconto (pode mudar)
+                    'new_line_total' => round($item['remaining'] * $item['unit_price'], 2),
+                ];
+            })->values(), // Usar values() para garantir array JSON válido
+        ]);
+    }
+
+    /**
+     * Reabre pedido aplicando ajustes automáticos nas quantidades e descontos
+     */
+    public function reopenWithAdjustment(Order $order, Request $request)
+    {
+        abort_unless(auth()->user()->hasPermission('orders.edit'), 403);
+        abort_unless($order->tenant_id === auth()->user()->tenant_id, 403);
+        abort_unless(auth()->user()->hasPermission('orders.reopen') || auth()->user()->hasPermission('admin'), 403);
+
+        // Usa método helper canBeReopened()
+        if (!$order->canBeReopened()) {
+            return back()->with('error', 'Pedido com NF-e transmitida não pode ser reaberto.');
+        }
+
+        // Reabrir apenas se estiver finalizado ou com devolução parcial
+        if (!in_array($order->status, ['fulfilled', 'partial_returned'], true)) {
+            return back()->with('error', 'Este pedido não pode ser reaberto no status atual.');
+        }
+
+        $v = $request->validate([
+            'justification' => 'required|string|min:10|max:500',
+            'apply_adjustments' => 'nullable|boolean',
+        ]);
+
+        $applyAdjustments = isset($v['apply_adjustments']) ? (bool) $v['apply_adjustments'] : true;
+
+        // Financeiro já foi estornado na devolução, então não precisa estornar novamente na reabertura
+        // Apenas preservar o financeiro existente
+        $hasReceivables = \App\Models\Receivable::where('tenant_id', auth()->user()->tenant_id)
+            ->where('order_id', $order->id)
+            ->where('status','!=','canceled')
+            ->exists();
+        
+        $order->reopen_preserve_financial = $hasReceivables;
+
+        // Usa método helper getItemsWithPartialReturns()
+        $itemsWithReturns = $order->getItemsWithPartialReturns();
+        $adjustmentsApplied = [];
+
+        if ($applyAdjustments && $itemsWithReturns->isNotEmpty()) {
+            // Aplicar ajustes automáticos
+            foreach ($itemsWithReturns as $itemData) {
+                $item = \App\Models\OrderItem::find($itemData['item_id']);
+                if (!$item || $item->order_id !== $order->id) continue;
+
+                $originalQty = (float) $item->quantity;
+                $remainingQty = $itemData['remaining'];
+                
+                // Se item foi totalmente devolvido, remover completamente
+                if ($remainingQty <= 0.001) {
+                    $adjustmentsApplied[] = [
+                        'action' => 'removed',
+                        'item_id' => $item->id,
+                        'name' => $item->name,
+                        'original_qty' => $originalQty,
+                    ];
+                    $item->delete();
+                    continue;
+                }
+
+                // Se item foi parcialmente devolvido, ajustar quantidade e desconto
+                $originalDiscount = (float) ($item->discount_value ?? 0);
+                
+                // Atualizar quantidade
+                $item->quantity = $remainingQty;
+                
+                // Zerar desconto após devolução parcial (política atual)
+                $item->discount_value = 0.0;
+                
+                // Recalcular line_total
+                $gross = $remainingQty * (float)$item->unit_price;
+                $item->line_total = round($gross - $item->discount_value, 2);
+                $item->save();
+
+                $adjustmentsApplied[] = [
+                    'action' => 'adjusted',
+                    'item_id' => $item->id,
+                    'name' => $item->name,
+                    'original_qty' => $originalQty,
+                    'new_qty' => $remainingQty,
+                    'original_discount' => $originalDiscount,
+                    'new_discount' => 0.0,
+                ];
+            }
+
+            // Recalcular totais do pedido
+            $this->recalculateTotals($order);
+        }
+
+        // Reabrir pedido
+        $order->status = 'open';
+        $order->save();
+
+        // Registrar auditoria detalhada
+        \App\Models\OrderAudit::create([
+            'order_id' => $order->id,
+            'user_id' => auth()->id(),
+            'action' => $applyAdjustments ? 'reopened_with_auto_adjustment' : 'reopened',
+            'notes' => 'Pedido reaberto' . ($applyAdjustments ? ' com ajuste automático' : '') . ': ' . ($v['justification'] ?? 'Sem justificativa'),
+            'changes' => [
+                'justification' => $v['justification'] ?? 'Sem justificativa',
+                'auto_adjustments_applied' => $applyAdjustments,
+                'adjustments' => $adjustmentsApplied,
+                'total_adjustments' => count($adjustmentsApplied),
+                'timestamp' => now()->toISOString()
+            ]
+        ]);
+
+        $successMsg = 'Pedido reaberto' . ($applyAdjustments && !empty($adjustmentsApplied) ? ' com ajuste automático aplicado' : '') . '.';
+        if (!empty($adjustmentsApplied)) {
+            $itemsList = collect($adjustmentsApplied)->map(function($adj) {
+                if ($adj['action'] === 'removed') {
+                    return "{$adj['name']} (removido - {$adj['original_qty']} devolvido(s))";
+                } else {
+                    return "{$adj['name']} ({$adj['original_qty']} → {$adj['new_qty']})";
+                }
+            })->implode('; ');
+            $successMsg .= ' Ajustes: ' . $itemsList;
+        }
+
+        return back()->with('success', $successMsg);
+    }
+
+    /**
+     * Ajusta quantidades e descontos automaticamente para pedidos já abertos com devolução parcial
+     * Não reabre o pedido (já está aberto), apenas ajusta os itens
+     */
+    public function adjustWithReturns(Order $order, Request $request)
+    {
+        abort_unless(auth()->user()->hasPermission('orders.edit'), 403);
+        abort_unless($order->tenant_id === auth()->user()->tenant_id, 403);
+        
+        // Só pode ajustar se o pedido estiver aberto e com devolução parcial
+        if ($order->status !== 'open' && $order->status !== 'partial_returned') {
+            return back()->with('error', 'Este pedido não está aberto para ajuste automático.');
+        }
+
+        // Verificar se tem NFe transmitida
+        if ($order->has_successful_nfe || !empty($order->nfe_issued_at)) {
+            return back()->with('error', 'Pedido com NF-e transmitida não pode ser ajustado automaticamente.');
+        }
+
+        $v = $request->validate([
+            'apply_adjustments' => 'nullable|boolean',
+        ]);
+
+        $applyAdjustments = isset($v['apply_adjustments']) ? (bool) $v['apply_adjustments'] : true;
+
+        // Usa método helper getItemsWithPartialReturns()
+        $itemsWithReturns = $order->getItemsWithPartialReturns();
+        $adjustmentsApplied = [];
+
+        if ($applyAdjustments && $itemsWithReturns->isNotEmpty()) {
+            // Aplicar ajustes automáticos
+            foreach ($itemsWithReturns as $itemData) {
+                $item = \App\Models\OrderItem::find($itemData['item_id']);
+                if (!$item || $item->order_id !== $order->id) continue;
+
+                $originalQty = (float) $item->quantity;
+                $remainingQty = $itemData['remaining'];
+                
+                // Se item foi totalmente devolvido, remover completamente
+                if ($remainingQty <= 0.001) {
+                    $adjustmentsApplied[] = [
+                        'action' => 'removed',
+                        'item_id' => $item->id,
+                        'name' => $item->name,
+                        'original_qty' => $originalQty,
+                    ];
+                    $item->delete();
+                    continue;
+                }
+
+                // Se item foi parcialmente devolvido, ajustar quantidade e desconto
+                $originalDiscount = (float) ($item->discount_value ?? 0);
+                
+                // Atualizar quantidade
+                $item->quantity = $remainingQty;
+                
+                // Zerar desconto após devolução parcial (política atual)
+                $item->discount_value = 0.0;
+                
+                // Recalcular line_total
+                $gross = $remainingQty * (float)$item->unit_price;
+                $item->line_total = round($gross - $item->discount_value, 2);
+                $item->save();
+
+                $adjustmentsApplied[] = [
+                    'action' => 'adjusted',
+                    'item_id' => $item->id,
+                    'name' => $item->name,
+                    'original_qty' => $originalQty,
+                    'new_qty' => $remainingQty,
+                    'original_discount' => $originalDiscount,
+                    'new_discount' => 0.0,
+                ];
+            }
+
+            // Recalcular totais do pedido
+            $this->recalculateTotals($order);
+            
+            // Atualizar status para 'open' se estava como 'partial_returned'
+            if ($order->status === 'partial_returned') {
+                $order->status = 'open';
+                $order->save();
+            }
+        }
+
+        // Registrar auditoria detalhada
+        \App\Models\OrderAudit::create([
+            'order_id' => $order->id,
+            'user_id' => auth()->id(),
+            'action' => 'auto_adjusted_with_returns',
+            'notes' => 'Ajuste automático de quantidades e descontos devido a devoluções parciais',
+            'changes' => [
+                'auto_adjustments_applied' => $applyAdjustments,
+                'adjustments' => $adjustmentsApplied,
+                'total_adjustments' => count($adjustmentsApplied),
+                'timestamp' => now()->toISOString()
+            ]
+        ]);
+
+        $successMsg = 'Quantidades e descontos ajustados automaticamente.';
+        if (!empty($adjustmentsApplied)) {
+            $itemsList = collect($adjustmentsApplied)->map(function($adj) {
+                if ($adj['action'] === 'removed') {
+                    return "{$adj['name']} (removido - {$adj['original_qty']} devolvido(s))";
+                } else {
+                    return "{$adj['name']} ({$adj['original_qty']} → {$adj['new_qty']})";
+                }
+            })->implode('; ');
+            $successMsg .= ' Ajustes: ' . $itemsList;
+        }
+
+        return back()->with('success', $successMsg);
     }
 
     public function updateDiscounts(Order $order, Request $request)
     {
         abort_unless(auth()->user()->hasPermission('orders.edit'), 403);
         abort_unless($order->tenant_id === auth()->user()->tenant_id, 403);
-        if (in_array(strtolower((string)$order->status), ['fulfilled','canceled'], true)) {
+        if (in_array(strtolower((string)$order->status), ['fulfilled','canceled','partial_returned'], true)) {
+            if (strtolower((string)$order->status) === 'partial_returned') {
+                return back()->with('error', 'Pedido com devolução parcial não permite alterar descontos. Reabra o pedido para permitir edições.');
+            }
             return back()->with('error','Pedido neste status não permite alterar descontos.');
         }
         $data = $request->validate([

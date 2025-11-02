@@ -110,6 +110,11 @@
                             <a href="{{ route('receipts.print', $r) }}" target="_blank" title="Imprimir" class="inline-flex items-center justify-center w-8 h-8 rounded bg-gray-50 hover:bg-gray-100 text-gray-700">
                             <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" > <polyline points="6 9 6 2 18 2 18 9" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></polyline> <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></path> <rect x="6" y="14" width="12" height="8" stroke-linecap="round" stroke-linejoin="round" stroke-width="2"></rect> </svg>                            </a>
                             @endif
+                            @if(auth()->user()->hasPermission('receipts.view'))
+                            <a href="{{ route('receipts.email_form', $r) }}" title="E-mail" class="inline-flex items-center justify-center w-8 h-8 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M1.5 4.5A1.5 1.5 0 013 3h18a1.5 1.5 0 011.5 1.5v15a1.5 1.5 0 01-1.5 1.5H3A1.5 1.5 0 011.5 19.5v-15zM3 6.44V19.5h18V6.44l-8.553 5.702a2 2 0 01-2.894 0L3 6.44zM20.25 4.5H3.75L12 10.5l8.25-6z"/></svg>
+                            </a>
+                            @endif
                             @if(auth()->user()->hasPermission('receipts.view') && $r->status === 'canceled')
                             <a href="{{ route('receipts.show', $r) }}" title="Visualizar Recibo Cancelado" class="inline-flex items-center justify-center w-8 h-8 rounded bg-gray-50 hover:bg-gray-100 text-gray-700">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>

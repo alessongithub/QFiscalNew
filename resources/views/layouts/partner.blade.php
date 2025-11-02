@@ -12,9 +12,12 @@
     <body class="bg-gray-100">
         <div class="min-h-screen flex">
             <div class="w-60 bg-purple-800 text-white flex-shrink-0">
-                <div class="h-16 flex items-center justify-center font-semibold">Painel do Parceiro</div>
+                <div class="h-16 flex items-center justify-center">
+                    <img src="{{ asset('logo_transp.png') }}" alt="QFiscal" class="h-12 w-auto">
+                </div>
                 <nav class="px-3 space-y-1">
                     <a href="{{ route('partner.dashboard') }}" class="block px-3 py-2 rounded hover:bg-purple-700 {{ request()->routeIs('partner.dashboard') ? 'bg-purple-700' : '' }}">Dashboard</a>
+                    <a href="{{ route('partner.invite-client') }}" class="block px-3 py-2 rounded hover:bg-purple-700 {{ request()->routeIs('partner.invite-client') ? 'bg-purple-700' : '' }}">Convidar Cliente</a>
                     <a href="{{ route('partner.tenants.index') }}" class="block px-3 py-2 rounded hover:bg-purple-700 {{ request()->routeIs('partner.tenants.*') ? 'bg-purple-700' : '' }}">Clientes</a>
                     <a href="{{ route('partner.invoices.index') }}" class="block px-3 py-2 rounded hover:bg-purple-700 {{ request()->routeIs('partner.invoices.*') ? 'bg-purple-700' : '' }}">Contas</a>
                     <a href="{{ route('partner.payments.index') }}" class="block px-3 py-2 rounded hover:bg-purple-700 {{ request()->routeIs('partner.payments.*') ? 'bg-purple-700' : '' }}">Pagamentos</a>

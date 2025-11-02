@@ -19,12 +19,12 @@
                     </svg>
                     Frete
                 </a>
-                <a href="{{ route('orders.print', $order) }}" target="_blank" class="inline-flex items-center px-3 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition-colors">
+                <button onclick="printOrder()" class="inline-flex items-center px-3 py-2 bg-gray-800 text-white rounded-lg hover:bg-gray-900 transition-colors">
                     <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/>
                     </svg>
                     Imprimir
-                </a>
+                </button>
                 <a href="{{ route('orders.index') }}" class="inline-flex items-center px-4 py-2 border border-gray-300 rounded-lg text-sm font-medium text-gray-700 bg-white hover:bg-gray-50 transition-colors">
                     <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
@@ -40,19 +40,28 @@
 
     <script>
         function showToast(message, type = 'success') {
+            const bgColors = {
+                'success': 'bg-green-500',
+                'error': 'bg-red-500',
+                'warning': 'bg-amber-500',
+                'info': 'bg-blue-500'
+            };
+            const icons = {
+                'success': '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>',
+                'error': '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>',
+                'warning': '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>',
+                'info': '<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z"/>'
+            };
+            const bgColor = bgColors[type] || bgColors['success'];
+            const iconSvg = icons[type] || icons['success'];
             const container = document.getElementById('toast-container');
             const toast = document.createElement('div');
             
-            const bgColor = type === 'success' ? 'bg-green-500' : type === 'error' ? 'bg-red-500' : 'bg-blue-500';
-            const icon = type === 'success' ? 
-                '<svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>' :
-                type === 'error' ?
-                '<svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>' :
-                '<svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z"></path></svg>';
-            
             toast.className = `${bgColor} text-white px-6 py-4 rounded-lg shadow-lg flex items-center space-x-3 transform translate-x-full transition-transform duration-300`;
             toast.innerHTML = `
-                ${icon}
+                <svg class="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    ${iconSvg}
+                </svg>
                 <span class="font-medium">${message}</span>
             `;
             
@@ -81,6 +90,9 @@
     @if(session('error'))
             showToast('{{ session('error') }}', 'error');
     @endif
+    @if(session('warning'))
+            showToast('{{ session('warning') }}', 'warning');
+    @endif
     @if(session('info'))
             showToast('{{ session('info') }}', 'info');
     @endif
@@ -98,7 +110,9 @@
         $nfeStatus = strtolower((string) ($latestNfe->status ?? ''));
         $nfeLocked = in_array($nfeStatus, ['emitted','transmitida']);
         $freightOnly = request()->boolean('freight_only');
-        $isOrderLocked = ($order->status==='fulfilled') || !empty($order->nfe_issued_at) || $nfeLocked;
+        // Pedido está bloqueado se: fulfilled (não pode editar), partial_returned (não pode editar sem reabrir), ou tem NFe transmitida
+        // partial_returned NÃO permite editar - precisa reabrir primeiro
+        $isOrderLocked = ($order->status==='fulfilled') || ($order->status==='partial_returned') || !empty($order->nfe_issued_at) || $nfeLocked;
         $freightPaymentLocked = !empty($order->nfe_issued_at) || $nfeLocked; // permitir ajuste em 'fulfilled' se ainda não emitiu NFe
         
         // Definir estratégia de cancelamento para todos os casos
@@ -107,6 +121,207 @@
             ? 'Este cancelamento irá gerar estorno no Caixa do Dia para valores já recebidos e cancelará os títulos em aberto. Os itens serão devolvidos ao estoque.'
             : 'Este cancelamento irá compensar os títulos em aberto (abatimento). Nenhum movimento de caixa será gerado agora. Os itens serão devolvidos ao estoque.';
     @endphp
+
+    @php
+        // Verificar se há devoluções parciais (independente do status atual)
+        $hasPartialReturns = $order->getItemsWithPartialReturns()->isNotEmpty();
+        
+        // Mostrar botão de reabertura quando:
+        // 1. Status é fulfilled (pedido finalizado precisa ser reaberto)
+        // 2. Não tem NFe transmitida
+        $canShowReopenButton = ($order->status==='fulfilled') && !$order->has_successful_nfe;
+        
+        // Mostrar botão de ajuste quando:
+        // 1. Pedido está aberto (status open)
+        // 2. Tem devoluções parciais
+        // 3. Não tem NFe transmitida
+        $canShowAdjustmentButton = ($order->status==='open') 
+            && $hasPartialReturns 
+            && !$order->has_successful_nfe;
+        
+        // Para partial_returned, sempre mostrar opção de reabertura se não tiver NFe transmitida
+        $canShowReopenPartialReturned = ($order->status === 'partial_returned') && !$order->has_successful_nfe;
+        
+        $shouldShowReopenSection = $canShowReopenButton || in_array($nfeStatus, ['cancelled','cancelada']);
+    @endphp
+
+    @if($order->status === 'partial_returned' || ($order->status === 'open' && $hasPartialReturns))
+        <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
+            @if($order->has_successful_nfe)
+            <div class="mb-4 p-4 border border-amber-300 bg-amber-50 rounded">
+                <div class="flex items-start gap-3">
+                        <svg class="w-5 h-5 text-amber-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+                        </svg>
+                        <div class="text-amber-900 flex-1">
+                            <div class="font-semibold mb-1">⚠️ Pedido com NF-e Transmitida + Devolução Parcial</div>
+                            <div class="text-sm space-y-2">
+                                @php
+                                    $latestNfe = $order->latestNfeNoteCompat;
+                                    $nfeNumber = $latestNfe->numero_nfe ?? null;
+                                    $nfeKey = $latestNfe->chave_acesso ?? null;
+                                @endphp
+                                <p>
+                                    Este pedido possui uma <strong>NF-e transmitida</strong>
+                                    @if($nfeNumber)
+                                        (Nº {{ $nfeNumber }})
+                                    @endif
+                                    e itens devolvidos parcialmente.
+                                </p>
+                                <p class="font-medium">⚠️ Ação necessária:</p>
+                                <p>
+                                    Para manter a conformidade fiscal, você <strong>deve emitir uma NF-e de devolução</strong> (tipo 1 ou 1A) que referencia a NF-e original de saída.
+                                    A NF-e de devolução garante a rastreabilidade e compliance com a Receita Federal.
+                                </p>
+                                @if(auth()->user()->hasPermission('orders.issue_nfe'))
+                                    <div class="mt-3">
+                                        <a href="{{ route('orders.edit', $order->id) }}?nfe_operation=devolucao_venda&auto_open=true" 
+                                           class="inline-flex items-center px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded text-sm font-medium">
+                                            <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+                                            </svg>
+                                            Emitir NF-e de Devolução
+                                        </a>
+                                    </div>
+                                @endif
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            @else
+                <div class="mb-4 p-4 border border-blue-300 bg-blue-50 rounded">
+                    <div class="flex items-start gap-3">
+                        <svg class="w-5 h-5 text-blue-600 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M12 2a10 10 0 100 20 10 10 0 000-20z"/>
+                    </svg>
+                        <div class="text-blue-900">
+                            <div class="font-semibold">Devolução parcial</div>
+                            <div class="text-sm mt-1">
+                                @if($order->status === 'open')
+                                    Este pedido está aberto e possui itens devolvidos parcialmente. Você pode ajustar as quantidades e descontos automaticamente ou editar manualmente.
+                                @else
+                                    Este pedido possui itens devolvidos parcialmente. Você precisa reabrir o pedido para editar, e pode ajustar as quantidades e descontos automaticamente durante a reabertura.
+                                @endif
+                            </div>
+                        <div class="mt-3 flex gap-2">
+                                @if($order->status === 'open' && $canShowAdjustmentButton)
+                                    <button type="button" class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded" onclick="showAdjustmentModal({{ $order->id }})">Ajustar Quantidades Automaticamente</button>
+                                @elseif($order->status === 'partial_returned' && $canShowReopenPartialReturned)
+                                    <button type="button" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded" onclick="showReopenModal({{ $order->id }})">Reabrir e Ajustar Quantidades</button>
+                            @endif
+                                @if(auth()->user()->hasPermission('orders.delete'))
+                                <button type="button" onclick="openCancelModal();" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded">
+                                    Cancelar pedido
+                                </button>
+                                @endif
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            @endif
+            
+            <!-- Modal de Ajuste Automático (para pedidos já abertos com devolução parcial) -->
+            <div id="adjustmentModal" class="fixed inset-0 bg-black/30 hidden flex items-center justify-center z-50">
+                <div class="bg-white rounded shadow-lg p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+                    <h3 class="font-semibold text-lg mb-2">Ajuste Automático de Quantidades</h3>
+                    <p class="text-sm text-gray-600 mb-4">Deseja ajustar automaticamente as quantidades e descontos dos itens com devoluções parciais?</p>
+                    
+                    <!-- Preview de Ajustes -->
+                    <div id="adjustmentPreview" class="mb-4 border rounded-lg overflow-hidden">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-4 py-2 text-left font-medium text-gray-700">Item</th>
+                                    <th class="px-4 py-2 text-right font-medium text-gray-700">Qtd Original</th>
+                                    <th class="px-4 py-2 text-right font-medium text-gray-700">Devolvido</th>
+                                    <th class="px-4 py-2 text-right font-medium text-gray-700">Qtd Restante</th>
+                                    <th class="px-4 py-2 text-right font-medium text-gray-700">Desc. Original</th>
+                                    <th class="px-4 py-2 text-right font-medium text-gray-700">Desc. Ajustado</th>
+                                </tr>
+                            </thead>
+                            <tbody id="adjustmentItemsBody" class="divide-y divide-gray-200">
+                                <!-- Preenchido via JavaScript -->
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <form id="adjustmentForm" action="{{ route('orders.adjust_with_returns', $order) }}" method="POST">
+                        @csrf
+                        <input type="hidden" name="apply_adjustments" value="1" id="applyAdjustmentsInput">
+                        <div class="bg-blue-50 border border-blue-200 rounded p-3 mb-4">
+                            <p class="text-sm text-blue-800">
+                                <strong>Nota:</strong> O estorno financeiro já foi processado na devolução. Este ajuste apenas atualiza as quantidades e descontos dos itens do pedido.
+                            </p>
+                        </div>
+                        <div class="flex justify-end space-x-2 mt-4">
+                            <button type="button" class="px-4 py-2 border border-gray-300 rounded text-sm font-medium text-gray-700 hover:bg-gray-50" onclick="closeAdjustmentModal()">Cancelar</button>
+                            <button type="button" class="px-4 py-2 border border-gray-300 rounded text-sm font-medium text-gray-700 hover:bg-gray-50" onclick="skipAdjustment()" title="Fechar este modal e ajustar os itens manualmente diretamente na página">Pular e Ajustar Manualmente na Página</button>
+                            <button type="submit" class="px-4 py-2 bg-green-600 text-white rounded text-sm font-medium hover:bg-green-700">Aplicar Ajuste Automático</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    @endif
+
+    <!-- Modal de Reabertura Simples (sem devoluções) -->
+    <div id="reopenModalDetail" class="fixed inset-0 bg-black/30 hidden flex items-center justify-center z-50">
+        <div class="bg-white rounded shadow-lg p-6 w-full max-w-md">
+            <h3 class="font-semibold text-lg mb-4">Reabrir pedido #{{ $order->number }}</h3>
+                                    <form action="{{ route('orders.reopen', $order) }}" method="POST">
+                                        @csrf
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Justificativa</label>
+                    <textarea name="justification" class="w-full border rounded p-2 text-sm" required minlength="10" maxlength="500" placeholder="Descreva o motivo da reabertura"></textarea>
+                                        </div>
+                <div class="flex justify-end space-x-2 mt-4">
+                    <button type="button" class="px-4 py-2 border border-gray-300 rounded text-sm font-medium text-gray-700 hover:bg-gray-50" onclick="document.getElementById('reopenModalDetail').classList.add('hidden'); document.getElementById('reopenModalDetail').classList.remove('flex');">Cancelar</button>
+                    <button type="submit" class="px-4 py-2 bg-amber-600 text-white rounded text-sm font-medium hover:bg-amber-700">Reabrir</button>
+                                        </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Modal de Reabertura com Ajuste Automático (com devoluções) -->
+    <div id="reopenModalWithAdjustment" class="fixed inset-0 bg-black/30 hidden flex items-center justify-center z-50">
+        <div class="bg-white rounded shadow-lg p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+            <h3 class="font-semibold text-lg mb-2">Reabertura com Ajuste Automático</h3>
+            <p class="text-sm text-gray-600 mb-4">Detectamos devoluções parciais. Deseja ajustar automaticamente as quantidades e descontos?</p>
+            
+            <!-- Preview de Ajustes -->
+            <div id="reopenAdjustmentPreview" class="mb-4 border rounded-lg overflow-hidden">
+                <table class="w-full text-sm">
+                    <thead class="bg-gray-50">
+                        <tr>
+                            <th class="px-4 py-2 text-left font-medium text-gray-700">Item</th>
+                            <th class="px-4 py-2 text-right font-medium text-gray-700">Qtd Original</th>
+                            <th class="px-4 py-2 text-right font-medium text-gray-700">Devolvido</th>
+                            <th class="px-4 py-2 text-right font-medium text-gray-700">Qtd Restante</th>
+                            <th class="px-4 py-2 text-right font-medium text-gray-700">Desc. Original</th>
+                            <th class="px-4 py-2 text-right font-medium text-gray-700">Desc. Ajustado</th>
+                        </tr>
+                    </thead>
+                    <tbody id="reopenAdjustmentItemsBody" class="divide-y divide-gray-200">
+                        <!-- Preenchido via JavaScript -->
+                    </tbody>
+                </table>
+            </div>
+
+            <form id="reopenWithAdjustmentForm" action="{{ route('orders.reopen.with_adjustment', $order) }}" method="POST">
+                @csrf
+                <input type="hidden" name="apply_adjustments" value="1" id="reopenApplyAdjustmentsInput">
+                <div class="mb-4">
+                    <label class="block text-sm font-medium text-gray-700 mb-1">Justificativa</label>
+                    <textarea name="justification" id="reopenAdjustmentJustification" class="w-full border rounded p-2 text-sm" required minlength="10" maxlength="500" placeholder="Descreva o motivo da reabertura"></textarea>
+                </div>
+                <div class="flex justify-end space-x-2 mt-4">
+                    <button type="button" class="px-4 py-2 border border-gray-300 rounded text-sm font-medium text-gray-700 hover:bg-gray-50" onclick="closeReopenModalWithAdjustment()">Cancelar</button>
+                    <button type="button" class="px-4 py-2 border border-gray-300 rounded text-sm font-medium text-gray-700 hover:bg-gray-50" onclick="editManuallyReopen()" title="Reabrir o pedido sem aplicar ajustes automáticos. Você poderá ajustar as quantidades e descontos manualmente depois.">Reabrir sem Ajuste Automático</button>
+                    <button type="submit" class="px-4 py-2 bg-amber-600 text-white rounded text-sm font-medium hover:bg-amber-700">Reabrir e Aplicar Ajuste</button>
+                                        </div>
+                                    </form>
+                                </div>
+                            </div>
 
     @if(in_array($nfeStatus, ['cancelled','cancelada']))
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
@@ -119,38 +334,19 @@
                         <div class="font-semibold">NF-e cancelada</div>
                         <div class="text-sm mt-1">Você pode reabrir o pedido para correções e emitir uma nova NF-e, ou cancelar o pedido definitivamente (estoque e financeiro serão estornados).</div>
                         <div class="mt-3 flex gap-2">
-                            @if(auth()->user()->hasPermission('orders.edit') && $order->status==='fulfilled')
-                            @php $canShowReopen = $canShowReopen ?? (($order->status==='fulfilled') && !$order->has_successful_nfe); @endphp
-                            @if($canShowReopen)
-                                <button type="button" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded" onclick="document.getElementById('reopenModalDetail').classList.remove('hidden')">Reabrir pedido</button>
+                            @php
+                                // Para NFe cancelada, verificar se precisa reabrir ou se já está aberto
+                                $needsReopen = ($order->status === 'fulfilled' || $order->status === 'partial_returned') && !$order->has_successful_nfe;
+                            @endphp
+                            @if($needsReopen)
+                                <button type="button" class="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded" onclick="showReopenModal({{ $order->id }})">Reabrir pedido</button>
+                            @elseif($order->status === 'open')
+                                @php
+                                    $hasPartialReturns = $order->getItemsWithPartialReturns()->isNotEmpty();
+                                @endphp
+                                @if($hasPartialReturns && !$order->has_successful_nfe)
+                                    <button type="button" class="px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded" onclick="showAdjustmentModal({{ $order->id }})">Ajustar Quantidades Automaticamente</button>
                             @endif
-                            <div id="reopenModalDetail" class="fixed inset-0 bg-black/30 hidden items-center justify-center z-50">
-                                <div class="bg-white rounded shadow p-4 w-full max-w-md">
-                                    <h3 class="font-semibold mb-2">Reabrir pedido #{{ $order->number }}</h3>
-                                    <form action="{{ route('orders.reopen', $order) }}" method="POST">
-                                        @csrf
-                                        <div class="mb-2">
-                                            <label class="block text-xs text-gray-600">Justificativa</label>
-                                            <textarea name="justification" class="w-full border rounded p-2" required minlength="10" maxlength="500" placeholder="Descreva o motivo"></textarea>
-                                        </div>
-                                        <div class="mb-2">
-                                            <label class="inline-flex items-center"><input type="checkbox" name="estornar" value="1" class="mr-2">Estornar financeiro deste pedido agora</label>
-                                        </div>
-                                        <div class="text-right space-x-2 mt-3">
-                                            <button type="button" class="px-3 py-1 border rounded" onclick="document.getElementById('reopenModalDetail').classList.add('hidden')">Cancelar</button>
-                                            <button type="submit" class="px-3 py-1 bg-amber-600 text-white rounded">Reabrir</button>
-                                        </div>
-                                    </form>
-                                </div>
-                            </div>
-                            @endif
-                            @if(auth()->user()->hasPermission('returns.create'))
-                            <a href="{{ route('returns.create', ['order' => $order->id]) }}" class="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded">Gerar Devolução</a>
-                            @endif
-                            @if(auth()->user()->hasPermission('orders.delete'))
-                            <button type="button" onclick="alert('Botão clicado!'); openCancelModal();" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded">
-                                Cancelar pedido
-                            </button>
                             @endif
                         </div>
                     </div>
@@ -391,9 +587,9 @@
                                     </div>
                                 </div>
                                 
-                @if($order->status !== 'fulfilled' && empty($order->nfe_issued_at))
+                @if($order->status !== 'fulfilled' && $order->status !== 'partial_returned' && empty($order->nfe_issued_at))
                                     <div class="text-right">
-                        @if($order->status !== 'fulfilled' && empty($order->nfe_issued_at))
+                        @if($order->status !== 'fulfilled' && $order->status !== 'partial_returned' && empty($order->nfe_issued_at))
                                             <button class="inline-flex items-center px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-lg hover:from-green-600 hover:to-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition-all transform hover:scale-105" @click.prevent="$event.target.closest('form').submit()">
                                                 <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6"/>
@@ -430,13 +626,26 @@
                 @foreach($items as $it)
                                         <tr class="hover:bg-gray-50 transition-colors">
                                             <td class="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900" data-product-in-row data-ncm="{{ optional($it->product)->ncm }}" data-cfop="{{ optional($it->product)->cfop }}" data-cst="{{ optional($it->product)->cst ?? optional($it->product)->cst_icms ?? '' }}" data-aliq-icms="{{ optional($it->product)->aliquota_icms ?? '' }}" data-aliq-pis="{{ optional($it->product)->aliquota_pis ?? '' }}" data-aliq-cofins="{{ optional($it->product)->aliquota_cofins ?? '' }}" data-incomplete="{{ (empty(optional($it->product)->ncm) || strlen((string)optional($it->product)->ncm) < 8 || empty(optional($it->product)->cfop) || (float)(optional($it->product)->aliquota_icms ?? 0) <= 0 || (float)(optional($it->product)->aliquota_pis ?? 0) <= 0 || (float)(optional($it->product)->aliquota_cofins ?? 0) <= 0 || (empty(optional($it->product)->cst) && empty(optional($it->product)->cst_icms))) ? '1' : '0' }}">{{ $it->name }}</td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{{ number_format($it->quantity, 3, ',', '.') }}</td>
+                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">
+                                                @php
+                                                    $returnedQty = (float) (\App\Models\ReturnItem::whereIn('return_id', \App\Models\ReturnModel::where('order_id', $order->id)->pluck('id'))
+                                                        ->where('order_item_id', $it->id)
+                                                        ->sum('quantity'));
+                                                    $soldQty = (float) $it->quantity;
+                                                @endphp
+                                                {{ number_format($soldQty, 3, ',', '.') }}
+                                                @if($returnedQty > 0)
+                                                    <span class="ml-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">
+                                                        {{ number_format($returnedQty, 3, ',', '.') }} devolvido(s)
+                                                    </span>
+                                                @endif
+                                            </td>
                                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">{{ $it->unit }}</td>
                                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">R$ {{ number_format($it->unit_price, 2, ',', '.') }}</td>
                                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-600">R$ {{ number_format((float)($it->discount_value ?? 0), 2, ',', '.') }}</td>
                                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900 font-semibold">R$ {{ number_format((float)$it->line_total, 2, ',', '.') }}</td>
                                             <td class="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                            @if($order->status !== 'fulfilled' && empty($order->nfe_issued_at))
+                            @if($order->status !== 'fulfilled' && $order->status !== 'partial_returned' && empty($order->nfe_issued_at))
                                 <form action="{{ route('orders.remove_item', [$order, $it]) }}" method="POST" class="inline" onsubmit="return confirm('Remover item?')">
                                 @csrf @method('DELETE')
                                                         <button class="inline-flex items-center px-3 py-1.5 text-sm text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg transition-colors">
@@ -461,22 +670,27 @@
                                         <span class="text-sm font-medium text-gray-700">Status:</span>
                                         <span class="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium
                                         @if($order->status === 'open') bg-yellow-100 text-yellow-800
-                                        @elseif($order->status === 'fulfilled') bg-green-100 text-green-800
+                                        @elseif($order->status === 'fulfilled' || $order->status === 'finished') bg-green-100 text-green-800
+                                        @elseif($order->status === 'partial_returned') bg-blue-100 text-blue-800
                                         @else bg-red-100 text-red-800 @endif">
                                             @if($order->status === 'open')
                                                 <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                                 </svg>
-                                            @elseif($order->status === 'fulfilled')
+                                            @elseif($order->status === 'fulfilled' || $order->status === 'finished')
                                                 <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                                                </svg>
+                                            @elseif($order->status === 'partial_returned')
+                                                <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3M5 13l4 4L19 7"/>
                                                 </svg>
                                             @else
                                                 <svg class="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
                                                 </svg>
                                             @endif
-                                        {{ ['open'=>'Aberto','fulfilled'=>'Finalizado','canceled'=>'Cancelado'][$order->status] ?? $order->status }}
+                                        {{ ['open'=>'Aberto','fulfilled'=>'Finalizado','finished'=>'Finalizado','canceled'=>'Cancelado','partial_returned'=>'Devolução parcial'][$order->status] ?? $order->status }}
                                     </span>
                                 </div>
                             </div>
@@ -530,7 +744,7 @@
                             </a>
     <button form="orderEditMainForm" type="submit"
                                 class="inline-flex items-center px-8 py-3 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-lg hover:from-green-600 hover:to-green-700 focus:outline-none focus:ring-2 focus:ring-green-500 focus:ring-offset-2 transition-all transform hover:scale-105"
-        @disabled((($order->status==='fulfilled') && !$isConsumerFinal) || !empty($order->nfe_issued_at) || $nfeLocked)>
+        @disabled((($order->status==='fulfilled' || $order->status==='partial_returned') && !$isConsumerFinal) || !empty($order->nfe_issued_at) || $nfeLocked)>
                                 <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
                                 </svg>
@@ -592,7 +806,7 @@
                 @endif
                     
                     <div class="bg-white border border-gray-200 rounded-lg p-6">
-                <form action="{{ route('orders.fulfill', $order) }}" method="POST" class="grid grid-cols-12 gap-3 items-end" onsubmit="return confirm('Confirmar frete e forma de pagamento? O pedido será finalizado e as movimentações geradas. Você ainda poderá editar frete e pagamento enquanto a NF-e não for emitida.');">
+                <form action="{{ route('orders.fulfill', $order) }}" method="POST" class="grid grid-cols-12 gap-3 items-end" onsubmit="if('{{ $order->status }}' === 'partial_returned') { alert('Pedido com devolução parcial não pode ser finalizado. Reabra o pedido primeiro.'); return false; } return confirm('Confirmar frete e forma de pagamento? O pedido será finalizado e as movimentações geradas. Você ainda poderá editar frete e pagamento enquanto a NF-e não for emitida.');">
                     @csrf
                     @if (false)
                     <div class="col-span-12"></div>
@@ -725,10 +939,14 @@
                             <span class="text-amber-700">NF-e bloqueada até definir pagamento e finalizar pedido.</span>
                         @endif
                     </div>
-                        @if(empty($order->nfe_issued_at))
+                        @if(empty($order->nfe_issued_at) && $order->status !== 'fulfilled' && $order->status !== 'partial_returned')
                             <button type="submit" class="px-4 py-2 bg-blue-700 text-white rounded hover:bg-blue-800">Finalizar pedido</button>
                         @else
-                            <button type="button" class="px-4 py-2 bg-gray-300 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded cursor-not-allowed" title="Pedido finalizado. Para editar, estorne o pedido." disabled>Finalizar pedido</button>
+                            @if($order->status === 'partial_returned')
+                                <button type="button" class="px-4 py-2 bg-gray-300 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded cursor-not-allowed" title="Pedido com devolução parcial não pode ser finalizado. Reabra o pedido primeiro." disabled>Finalizar pedido</button>
+                            @else
+                                <button type="button" class="px-4 py-2 bg-gray-300 dark:bg-gray-700 text-gray-600 dark:text-gray-300 rounded cursor-not-allowed" title="Pedido finalizado. Para editar, estorne o pedido." disabled>Finalizar pedido</button>
+                            @endif
                         @endif
                     </div>
                 </form>
@@ -1122,7 +1340,7 @@
                 </div>
             </div>
 
-            @if($order->status!=='fulfilled' && empty($order->nfe_issued_at))
+            @if($order->status!=='fulfilled' && $order->status!=='partial_returned' && empty($order->nfe_issued_at))
                 <div class="mt-4 flex items-center justify-between">
                     <div class="text-xs text-gray-600 dark:text-gray-400">
                         @if(!empty($canIssueNfe) && $canIssueNfe)
@@ -1849,7 +2067,7 @@ function freightForm(){
                         </div>
                         <div class="col-span-3">
                             <label class="block text-xs text-gray-600 dark:text-gray-400">Valor do Frete (R$)</label>
-                        <input type="number" step="0.01" min="0" name="freight_cost" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="0,00" value="{{ $order->freight_cost }}" @disabled($order->status==='fulfilled' || !empty($order->nfe_issued_at))>
+                        <input type="number" step="0.01" min="0" name="freight_cost" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="0,00" value="{{ $order->freight_cost }}" @disabled($order->status==='fulfilled' || $order->status==='partial_returned' || !empty($order->nfe_issued_at))>
                         </div>
                     </div>
                 </div>
@@ -1864,27 +2082,27 @@ function freightForm(){
                     <div class="grid grid-cols-12 gap-3 items-end">
                         <div class="col-span-3">
                             <label class="block text-xs text-gray-600 dark:text-gray-400">Qtd. Volumes</label>
-                            <input type="number" min="0" step="1" name="volume_qtd" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="0" value="{{ $order->volume_qtd }}" @disabled($order->status==='fulfilled' || !empty($order->nfe_issued_at))>
+                            <input type="number" min="0" step="1" name="volume_qtd" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="0" value="{{ $order->volume_qtd }}" @disabled($order->status==='fulfilled' || $order->status==='partial_returned' || !empty($order->nfe_issued_at))>
                         </div>
                         <div class="col-span-3">
                             <label class="block text-xs text-gray-600 dark:text-gray-400">Espécie</label>
-                            <input type="text" name="volume_especie" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="Caixa, Palete, etc." value="{{ $order->volume_especie }}" @disabled($order->status==='fulfilled' || !empty($order->nfe_issued_at))>
+                            <input type="text" name="volume_especie" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="Caixa, Palete, etc." value="{{ $order->volume_especie }}" @disabled($order->status==='fulfilled' || $order->status==='partial_returned' || !empty($order->nfe_issued_at))>
                         </div>
                         <div class="col-span-3">
                             <label class="block text-xs text-gray-600 dark:text-gray-400">Peso Bruto (kg)</label>
-                            <input type="number" step="0.001" min="0" name="peso_bruto" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="0,000" value="{{ $order->peso_bruto }}" @disabled($order->status==='fulfilled' || !empty($order->nfe_issued_at))>
+                            <input type="number" step="0.001" min="0" name="peso_bruto" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="0,000" value="{{ $order->peso_bruto }}" @disabled($order->status==='fulfilled' || $order->status==='partial_returned' || !empty($order->nfe_issued_at))>
                         </div>
                         <div class="col-span-3">
                             <label class="block text-xs text-gray-600 dark:text-gray-400">Peso Líquido (kg)</label>
-                            <input type="number" step="0.001" min="0" name="peso_liquido" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="0,000" value="{{ $order->peso_liquido }}" @disabled($order->status==='fulfilled' || !empty($order->nfe_issued_at))>
+                            <input type="number" step="0.001" min="0" name="peso_liquido" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="0,000" value="{{ $order->peso_liquido }}" @disabled($order->status==='fulfilled' || $order->status==='partial_returned' || !empty($order->nfe_issued_at))>
                         </div>
                         <div class="col-span-3">
                             <label class="block text-xs text-gray-600 dark:text-gray-400">Seguro (R$)</label>
-                            <input type="number" step="0.01" min="0" name="valor_seguro" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="0,00" value="{{ $order->valor_seguro }}" @disabled($order->status==='fulfilled' || !empty($order->nfe_issued_at))>
+                            <input type="number" step="0.01" min="0" name="valor_seguro" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="0,00" value="{{ $order->valor_seguro }}" @disabled($order->status==='fulfilled' || $order->status==='partial_returned' || !empty($order->nfe_issued_at))>
                         </div>
                         <div class="col-span-3">
                             <label class="block text-xs text-gray-600 dark:text-gray-400">Outras Despesas (R$)</label>
-                            <input type="number" step="0.01" min="0" name="outras_despesas" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="0,00" value="{{ $order->outras_despesas }}" @disabled($order->status==='fulfilled' || !empty($order->nfe_issued_at))>
+                            <input type="number" step="0.01" min="0" name="outras_despesas" class="w-full border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded p-2" placeholder="0,00" value="{{ $order->outras_despesas }}" @disabled($order->status==='fulfilled' || $order->status==='partial_returned' || !empty($order->nfe_issued_at))>
                         </div>
                     </div>
                 </div>
@@ -2652,6 +2870,259 @@ document.getElementById('cancelOrderForm')?.addEventListener('submit', function(
     
     console.log('Formulário sendo enviado com justificativa:', reason);
     return true;
+});
+
+// Função para mostrar modal de ajuste (para pedidos já abertos com devolução parcial)
+// Este modal NÃO precisa de justificativa porque o pedido já está aberto
+function showAdjustmentModal(orderId) {
+    console.log('Buscando dados de ajuste para pedido:', orderId);
+    // Buscar dados de ajuste via AJAX
+    fetch(`/orders/${orderId}/prepare-reopen-adjustment`)
+        .then(response => {
+            console.log('Response status:', response.status);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Dados recebidos:', data);
+            if (data.has_adjustments && data.items && data.items.length > 0) {
+                console.log('Mostrando modal de ajuste (pedido já aberto). Itens:', data.items.length);
+                // Mostrar modal de ajuste automático (sem justificativa)
+                showAdjustmentModalWithItems(data.items);
+            } else {
+                console.log('Nenhum ajuste necessário');
+                showToast('Nenhum ajuste necessário. O pedido não possui devoluções parciais.', 'info');
+            }
+        })
+        .catch(error => {
+            console.error('Erro ao buscar dados de ajuste:', error);
+            showToast('Erro ao carregar dados de ajuste.', 'error');
+        });
+}
+
+// Função para mostrar modal de ajuste com itens
+function showAdjustmentModalWithItems(items) {
+    const tbody = document.getElementById('adjustmentItemsBody');
+    tbody.innerHTML = '';
+    
+    items.forEach(item => {
+        const row = document.createElement('tr');
+        row.className = 'hover:bg-gray-50';
+        
+        const formatNumber = (num) => {
+            return typeof num === 'number' ? num.toFixed(3).replace(/\.?0+$/, '') : '0';
+        };
+        
+        const formatCurrency = (num) => {
+            return typeof num === 'number' ? 'R$ ' + num.toFixed(2).replace('.', ',') : 'R$ 0,00';
+        };
+        
+        row.innerHTML = `
+            <td class="px-4 py-2 font-medium text-gray-900">${item.name || 'Item'}</td>
+            <td class="px-4 py-2 text-right text-gray-700">${formatNumber(item.sold)}</td>
+            <td class="px-4 py-2 text-right text-red-600 font-medium">${formatNumber(item.returned)}</td>
+            <td class="px-4 py-2 text-right text-green-600 font-medium">${formatNumber(item.remaining)}</td>
+            <td class="px-4 py-2 text-right text-gray-700">${formatCurrency(item.discount_value || 0)}</td>
+            <td class="px-4 py-2 text-right text-gray-500">${formatCurrency(item.new_discount || 0)}</td>
+        `;
+        tbody.appendChild(row);
+    });
+    
+    // Mostrar modal
+    const modal = document.getElementById('adjustmentModal');
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+}
+
+// Função para fechar modal de ajuste
+function closeAdjustmentModal() {
+    const modal = document.getElementById('adjustmentModal');
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+}
+
+// Função para "Pular e Editar Manualmente"
+function skipAdjustment() {
+    closeAdjustmentModal();
+    showToast('Você pode editar os itens manualmente na página.', 'info');
+}
+
+// Função para mostrar modal de reabertura (com ou sem ajustes)
+function showReopenModal(orderId) {
+    console.log('Buscando dados de ajuste para pedido:', orderId);
+    // Buscar dados de ajuste via AJAX
+    fetch(`/orders/${orderId}/prepare-reopen-adjustment`)
+        .then(response => {
+            console.log('Response status:', response.status);
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('Dados recebidos:', data);
+            console.log('has_adjustments:', data.has_adjustments);
+            console.log('items count:', data.items ? data.items.length : 0);
+            
+            // Se há ajustes (devoluções parciais), mostrar modal com preview
+            if (data.has_adjustments === true && data.items && Array.isArray(data.items) && data.items.length > 0) {
+                console.log('Mostrando modal com ajustes. Itens:', data.items.length);
+                // Mostrar modal com ajustes
+                showReopenModalWithAdjustment(data.items);
+            } else {
+                console.log('Mostrando modal simples (sem ajustes ou sem itens com devolução parcial)');
+                // Mostrar modal simples (sem ajustes)
+                const modal = document.getElementById('reopenModalDetail');
+                if (modal) {
+                    modal.classList.remove('hidden');
+                    modal.classList.add('flex');
+                }
+            }
+        })
+        .catch(error => {
+            console.error('Erro ao buscar dados de ajuste:', error);
+            // Em caso de erro, mostrar modal simples
+            const modal = document.getElementById('reopenModalDetail');
+            if (modal) {
+                modal.classList.remove('hidden');
+                modal.classList.add('flex');
+            }
+        });
+}
+
+// Função para mostrar modal com ajustes (na reabertura)
+function showReopenModalWithAdjustment(items) {
+    const tbody = document.getElementById('reopenAdjustmentItemsBody');
+    tbody.innerHTML = '';
+    
+    items.forEach(item => {
+        const row = document.createElement('tr');
+        row.className = 'hover:bg-gray-50';
+        
+        const formatNumber = (num) => {
+            return typeof num === 'number' ? num.toFixed(3).replace(/\.?0+$/, '') : '0';
+        };
+        
+        const formatCurrency = (num) => {
+            return typeof num === 'number' ? 'R$ ' + num.toFixed(2).replace('.', ',') : 'R$ 0,00';
+        };
+        
+        row.innerHTML = `
+            <td class="px-4 py-2 font-medium text-gray-900">${item.name || 'Item'}</td>
+            <td class="px-4 py-2 text-right text-gray-700">${formatNumber(item.sold)}</td>
+            <td class="px-4 py-2 text-right text-red-600 font-medium">${formatNumber(item.returned)}</td>
+            <td class="px-4 py-2 text-right text-green-600 font-medium">${formatNumber(item.remaining)}</td>
+            <td class="px-4 py-2 text-right text-gray-700">${formatCurrency(item.discount_value || 0)}</td>
+            <td class="px-4 py-2 text-right text-gray-500">${formatCurrency(item.new_discount || 0)}</td>
+        `;
+        tbody.appendChild(row);
+    });
+    
+    // Mostrar modal
+    const modal = document.getElementById('reopenModalWithAdjustment');
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+}
+
+// Função para fechar modal com ajustes
+function closeReopenModalWithAdjustment() {
+    const modal = document.getElementById('reopenModalWithAdjustment');
+    modal.classList.add('hidden');
+    modal.classList.remove('flex');
+    // Limpar formulário
+    const justificationField = document.getElementById('reopenAdjustmentJustification');
+    if (justificationField) {
+        justificationField.value = '';
+    }
+}
+
+// Função para "Editar Manualmente" na reabertura (cancela ajuste automático)
+function editManuallyReopen() {
+    // Verificar se a justificativa foi preenchida
+    const justificationField = document.getElementById('reopenAdjustmentJustification');
+    const justification = justificationField ? justificationField.value.trim() : '';
+    
+    if (!justification || justification.length < 10) {
+        alert('Por favor, preencha a justificativa (mínimo 10 caracteres) antes de reabrir o pedido.');
+        if (justificationField) {
+            justificationField.focus();
+        }
+        return;
+    }
+    
+    // Desmarcar ajuste automático
+    document.getElementById('reopenApplyAdjustmentsInput').value = '0';
+    // Submeter formulário para reabertura sem ajuste automático
+    document.getElementById('reopenWithAdjustmentForm').submit();
+}
+</script>
+
+    <!-- Modal de Configuração de Impressão -->
+    <div id="printOptionsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 class="text-lg font-semibold mb-4">Opções de Impressão</h3>
+            <form id="printOptionsForm">
+                <div class="space-y-3 mb-4">
+                    <label class="flex items-center">
+                        <input type="checkbox" name="show_payment" value="1" checked class="mr-2">
+                        <span>Formas de Pagamento (Parcelas)</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" name="show_fiscal_info" value="1" checked class="mr-2">
+                        <span>Observações Fiscais</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" name="show_transport" value="1" checked class="mr-2">
+                        <span>Informações de Transporte</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" name="show_rateio" value="1" class="mr-2">
+                        <span>Rateio por Item (conferência)</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" name="show_tax_estimate" value="1" class="mr-2">
+                        <span>Estimativa de Tributos</span>
+                    </label>
+                </div>
+                <div class="flex justify-end gap-2">
+                    <button type="button" onclick="closePrintModal()" class="px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300">Cancelar</button>
+                    <button type="submit" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">Imprimir</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        function openPrintModal() {
+            document.getElementById('printOptionsModal').classList.remove('hidden');
+            document.getElementById('printOptionsModal').classList.add('flex');
+        }
+
+        function closePrintModal() {
+            document.getElementById('printOptionsModal').classList.add('hidden');
+            document.getElementById('printOptionsModal').classList.remove('flex');
+        }
+
+        // Substituir função printOrder() existente ou criar se não existir
+        const originalPrintOrder = window.printOrder || function() {};
+        window.printOrder = function() {
+            openPrintModal();
+        };
+
+        document.getElementById('printOptionsForm').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const formData = new FormData(this);
+            const params = new URLSearchParams();
+            for (const [key, value] of formData.entries()) {
+                if (value === '1') {
+                    params.append(key, '1');
+                }
+            }
+            const url = '{{ route("orders.print", $order) }}' + '?' + params.toString();
+            window.open(url, '_blank');
+            closePrintModal();
 });
 </script>
 

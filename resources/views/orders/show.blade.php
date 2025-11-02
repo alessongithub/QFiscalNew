@@ -49,14 +49,11 @@
 
     <div class="py-6">
         <div class="max-w-7xl mx-auto sm:px-6 lg:px-8">
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div class="space-y-6">
                 
-                <!-- Informações Principais -->
-                <div class="lg:col-span-2 space-y-6">
-                    
-                    <!-- Dados do Pedido -->
-                    <div class="bg-white shadow-lg rounded-lg overflow-hidden">
-                        <div class="bg-gradient-to-r from-blue-50 to-blue-100 px-6 py-4 border-b border-gray-200">
+                <!-- Dados do Pedido -->
+                <div class="bg-white shadow-lg rounded-lg overflow-hidden">
+                    <div class="bg-gradient-to-r from-blue-50 to-blue-100 px-6 py-4 border-b border-gray-200">
                             <h3 class="text-lg font-semibold text-gray-900 flex items-center">
                                 <svg class="w-5 h-5 mr-2 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v10a2 2 0 002 2h8a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
@@ -76,8 +73,8 @@
                                         @if($order->status === 'draft') bg-gray-100 text-gray-800
                                         @elseif($order->status === 'open') bg-yellow-100 text-yellow-800
                                         @elseif($order->status === 'fulfilled') bg-green-100 text-green-800
-                                        @elseif($order->status === 'cancelled') bg-red-100 text-red-800
-                                        @elseif($order->status === 'canceled') bg-red-100 text-red-800
+                                        @elseif($order->status === 'cancelled' || $order->status === 'canceled') bg-red-100 text-red-800
+                                        @elseif($order->status === 'partial_returned') bg-blue-100 text-blue-800
                                         @else bg-blue-100 text-blue-800 @endif">
                                         @switch($order->status)
                                             @case('draft') Rascunho @break
@@ -85,6 +82,7 @@
                                             @case('fulfilled') Finalizado @break
                                             @case('cancelled') Cancelado @break
                                             @case('canceled') Cancelado @break
+                                            @case('partial_returned') Devolução parcial @break
                                             @default {{ ucfirst($order->status) }} @break
                                         @endswitch
                                     </div>
@@ -99,11 +97,11 @@
                                 </div>
                             </div>
                         </div>
-                    </div>
+                </div>
 
-                    <!-- Dados do Cliente -->
-                    <div class="bg-white shadow-lg rounded-lg overflow-hidden">
-                        <div class="bg-gradient-to-r from-green-50 to-green-100 px-6 py-4 border-b border-gray-200">
+                <!-- Dados do Cliente -->
+                <div class="bg-white shadow-lg rounded-lg overflow-hidden">
+                    <div class="bg-gradient-to-r from-green-50 to-green-100 px-6 py-4 border-b border-gray-200">
                             <h3 class="text-lg font-semibold text-gray-900 flex items-center">
                                 <svg class="w-5 h-5 mr-2 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/>
@@ -141,11 +139,11 @@
                                 <div class="text-gray-500 text-center py-4">Cliente não informado</div>
                             @endif
                         </div>
-                    </div>
+                </div>
 
-                    <!-- Itens do Pedido -->
-                    <div class="bg-white shadow-lg rounded-lg overflow-hidden">
-                        <div class="bg-gradient-to-r from-purple-50 to-purple-100 px-6 py-4 border-b border-gray-200">
+                <!-- Itens do Pedido -->
+                <div class="bg-white shadow-lg rounded-lg overflow-hidden">
+                    <div class="bg-gradient-to-r from-purple-50 to-purple-100 px-6 py-4 border-b border-gray-200">
                             <h3 class="text-lg font-semibold text-gray-900 flex items-center">
                                 <svg class="w-5 h-5 mr-2 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
@@ -153,8 +151,8 @@
                                 Itens do Pedido
                             </h3>
                         </div>
-                        <div class="w-full">
-                            <table class="w-full">
+                        <div class="overflow-x-auto">
+                            <table class="w-full min-w-full divide-y divide-gray-200">
                                 <thead class="bg-gray-50">
                                     <tr>
                                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Item</th>
@@ -165,16 +163,35 @@
                                         <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
                                     </tr>
                                 </thead>
-                                <tbody class="bg-white">
+                                <tbody class="bg-white divide-y divide-gray-200">
                                     @forelse($order->items as $item)
-                                        <tr>
-                                            <td class="px-6 py-4 whitespace-nowrap">
+                                        @php
+                                            // Usa accessor returned_quantity do OrderItem
+                                            $returnedQty = $item->returned_quantity;
+                                            $unit = strtoupper((string) $item->unit);
+                                            $fractionalUnits = ['KG','G','MG','L','ML','M','CM','MM','M2','M3'];
+                                            $isFractional = in_array($unit, $fractionalUnits, true);
+                                            $qtyText = $isFractional ? rtrim(rtrim(number_format((float)$item->quantity, 3, ',', '.'), '0'), ',') : (string) (int) round((float)$item->quantity);
+                                            $retQtyText = $isFractional ? rtrim(rtrim(number_format($returnedQty, 3, ',', '.'), '0'), ',') : (string) (int) round($returnedQty);
+                                        @endphp
+                                        <tr class="hover:bg-gray-50 transition-colors">
+                                            <td class="px-6 py-4">
                                                 <div class="text-sm font-medium text-gray-900">{{ $item->name }}</div>
                                                 @if($item->description)
                                                     <div class="text-sm text-gray-500">{{ $item->description }}</div>
                                                 @endif
                                             </td>
-                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{ number_format($item->quantity, 3, ',', '.') }}</td>
+                                            <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                                <div>{{ $qtyText }}</div>
+                                                @if($returnedQty > 0)
+                                                    <div class="mt-1 text-xs text-red-700 bg-red-50 border border-red-200 px-2 py-0.5 rounded flex items-center w-max">
+                                                        <svg class="w-3.5 h-3.5 mr-1 text-red-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6"/>
+                                                        </svg>
+                                                        {{ $retQtyText }}
+                                                    </div>
+                                                @endif
+                                            </td>
                                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{{ $item->unit }}</td>
                                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">R$ {{ number_format($item->unit_price, 2, ',', '.') }}</td>
                                             <td class="px-6 py-4 whitespace-nowrap text-sm text-gray-900">R$ {{ number_format((float)($item->discount_value ?? 0), 2, ',', '.') }}</td>
@@ -188,16 +205,11 @@
                                 </tbody>
                             </table>
                         </div>
-                    </div>
-
                 </div>
 
-                <!-- Sidebar -->
-                <div class="space-y-6">
-                    
-                    <!-- Resumo Financeiro -->
-                    <div class="bg-white shadow-lg rounded-lg overflow-hidden">
-                        <div class="bg-gradient-to-r from-yellow-50 to-yellow-100 px-6 py-4 border-b border-gray-200">
+                <!-- Resumo Financeiro -->
+                <div class="bg-white shadow-lg rounded-lg overflow-hidden">
+                    <div class="bg-gradient-to-r from-yellow-50 to-yellow-100 px-6 py-4 border-b border-gray-200">
                             <h3 class="text-lg font-semibold text-gray-900 flex items-center">
                                 <svg class="w-5 h-5 mr-2 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1"/>
@@ -243,12 +255,12 @@
                                 <span class="text-lg font-bold text-gray-900">R$ {{ number_format($order->total_amount, 2, ',', '.') }}</span>
                             </div>
                         </div>
-                    </div>
+                </div>
 
-                    <!-- Informações de Frete -->
-                    @if($order->carrier || $order->freight_cost > 0 || $order->freight_mode)
-                        <div class="bg-white shadow-lg rounded-lg overflow-hidden">
-                            <div class="bg-gradient-to-r from-indigo-50 to-indigo-100 px-6 py-4 border-b border-gray-200">
+                <!-- Informações de Frete -->
+                @if($order->carrier || $order->freight_cost > 0 || $order->freight_mode)
+                    <div class="bg-white shadow-lg rounded-lg overflow-hidden">
+                        <div class="bg-gradient-to-r from-indigo-50 to-indigo-100 px-6 py-4 border-b border-gray-200">
                                 <h3 class="text-lg font-semibold text-gray-900 flex items-center">
                                     <svg class="w-5 h-5 mr-2 text-indigo-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4"/>
@@ -287,6 +299,8 @@
                                         <label class="block text-sm font-medium text-gray-700 mb-1">Pagador do Frete</label>
                                         <div class="text-gray-900">
                                             @switch($order->freight_payer)
+                                                @case('company') Empresa @break
+                                                @case('buyer') Destinatário @break
                                                 @case('sender') Remetente @break
                                                 @case('receiver') Destinatário @break
                                                 @case('third') Terceiros @break
@@ -339,13 +353,14 @@
                                 @endif
                             </div>
                         </div>
-                    @endif
+                    </div>
+                @endif
 
-                    <!-- Informações Adicionais -->
-                    @if($order->additional_info || $order->fiscal_info)
-                        <div class="bg-white shadow-lg rounded-lg overflow-hidden">
-                            <div class="bg-gradient-to-r from-gray-50 to-gray-100 px-6 py-4 border-b border-gray-200">
-                                <h3 class="text-lg font-semibold text-gray-900 flex items-center">
+                <!-- Informações Adicionais -->
+                @if($order->additional_info || $order->fiscal_info)
+                    <div class="bg-white shadow-lg rounded-lg overflow-hidden">
+                        <div class="bg-gradient-to-r from-gray-50 to-gray-100 px-6 py-4 border-b border-gray-200">
+                            <h3 class="text-lg font-semibold text-gray-900 flex items-center">
                                     <svg class="w-5 h-5 mr-2 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
                                     </svg>
@@ -365,15 +380,15 @@
                                         <div class="text-gray-900">{{ $order->fiscal_info }}</div>
                                     </div>
                                 @endif
-                            </div>
                         </div>
-                    @endif
+                    </div>
+                @endif
 
-                    <!-- Contas a Receber -->
-                    @if($order->receivables->count() > 0)
-                        <div class="bg-white shadow-lg rounded-lg overflow-hidden">
-                            <div class="bg-gradient-to-r from-emerald-50 to-emerald-100 px-6 py-4 border-b border-gray-200">
-                                <h3 class="text-lg font-semibold text-gray-900 flex items-center">
+                <!-- Contas a Receber -->
+                @if($order->receivables->count() > 0)
+                    <div class="bg-white shadow-lg rounded-lg overflow-hidden">
+                        <div class="bg-gradient-to-r from-emerald-50 to-emerald-100 px-6 py-4 border-b border-gray-200">
+                            <h3 class="text-lg font-semibold text-gray-900 flex items-center">
                                     <svg class="w-5 h-5 mr-2 text-emerald-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1"/>
                                     </svg>
@@ -424,7 +439,6 @@
                         </div>
                     @endif
 
-                </div>
             </div>
         </div>
     </div>
@@ -661,5 +675,198 @@
                 printWindow.close();
             };
         }
+
+        // Substituir função printOrder() para abrir modal
+        const originalPrintOrder = window.printOrder || function() {};
+        window.printOrder = function() {
+            openPrintModal();
+        };
+
+        function openPrintModal() {
+            const modal = document.getElementById('printOptionsModal');
+            if (modal) {
+                modal.classList.remove('hidden');
+                modal.classList.add('flex');
+                
+                // Garantir que o listener do formulário está ativo quando o modal é aberto
+                setTimeout(function() {
+                    const printForm = document.getElementById('printOptionsForm');
+                    if (printForm) {
+                        console.log('Modal aberto - verificando formulário');
+                    }
+                }, 100);
+            }
+        }
+
+        function closePrintModal() {
+            const modal = document.getElementById('printOptionsModal');
+            if (modal) {
+                modal.classList.add('hidden');
+                modal.classList.remove('flex');
+            }
+        }
+
+        // Aguardar o DOM estar pronto antes de adicionar o event listener
+        document.addEventListener('DOMContentLoaded', function() {
+            const printForm = document.getElementById('printOptionsForm');
+            if (printForm) {
+                console.log('Formulário de impressão encontrado, adicionando event listener');
+                printForm.addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    console.log('Formulário de impressão submetido');
+                    
+                    const formData = new FormData(this);
+                    const params = new URLSearchParams();
+                    for (const [key, value] of formData.entries()) {
+                        if (value === '1') {
+                            params.append(key, '1');
+                        }
+                    }
+                    
+                    const baseUrl = '{{ route("orders.print", $order) }}';
+                    const queryString = params.toString();
+                    const url = queryString ? baseUrl + '?' + queryString : baseUrl;
+                    
+                    console.log('URL de impressão:', url);
+                    
+                    // Fechar o modal primeiro
+                    closePrintModal();
+                    
+                    // Aguardar um pouco antes de abrir a janela para garantir que o modal fechou
+                    setTimeout(function() {
+                        console.log('Abrindo janela de impressão...');
+                        try {
+                            const printWindow = window.open(url, '_blank', 'width=800,height=600');
+                            
+                            if (printWindow) {
+                                console.log('Janela aberta com sucesso');
+                                
+                                // Aguardar o carregamento e imprimir automaticamente
+                                printWindow.addEventListener('load', function() {
+                                    console.log('Conteúdo carregado, chamando print...');
+                                    setTimeout(function() {
+                                        printWindow.print();
+                                    }, 500);
+                                });
+                                
+                                // Fallback caso onload não funcione (para conteúdo já carregado)
+                                setTimeout(function() {
+                                    if (printWindow && !printWindow.closed) {
+                                        console.log('Fallback: chamando print...');
+                                        try {
+                                            printWindow.focus();
+                                            printWindow.print();
+                                        } catch(err) {
+                                            console.error('Erro ao chamar print:', err);
+                                        }
+                                    }
+                                }, 1500);
+                            } else {
+                                console.error('Erro: Popup bloqueado pelo navegador');
+                                alert('Erro: Por favor, permita popups para este site ou tente novamente.');
+                            }
+                        } catch(err) {
+                            console.error('Erro ao abrir janela:', err);
+                            alert('Erro ao abrir janela de impressão: ' + err.message);
+                        }
+                    }, 300);
+                    
+                    return false;
+                });
+            } else {
+                console.error('Erro: Formulário de impressão não encontrado');
+            }
+        });
+        
+        // Fallback caso DOMContentLoaded já tenha sido disparado
+        if (document.readyState === 'loading') {
+            // DOM ainda não carregou, o listener acima será usado
+        } else {
+            // DOM já carregou, executar imediatamente
+            const printForm = document.getElementById('printOptionsForm');
+            if (printForm && !printForm.hasAttribute('data-listener-added')) {
+                printForm.setAttribute('data-listener-added', 'true');
+                console.log('Formulário de impressão encontrado (fallback), adicionando event listener');
+                printForm.addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    console.log('Formulário de impressão submetido (fallback)');
+                    
+                    const formData = new FormData(this);
+                    const params = new URLSearchParams();
+                    for (const [key, value] of formData.entries()) {
+                        if (value === '1') {
+                            params.append(key, '1');
+                        }
+                    }
+                    
+                    const baseUrl = '{{ route("orders.print", $order) }}';
+                    const queryString = params.toString();
+                    const url = queryString ? baseUrl + '?' + queryString : baseUrl;
+                    
+                    console.log('URL de impressão:', url);
+                    closePrintModal();
+                    
+                    setTimeout(function() {
+                        console.log('Abrindo janela de impressão (fallback)...');
+                        try {
+                            const printWindow = window.open(url, '_blank', 'width=800,height=600');
+                            if (printWindow) {
+                                console.log('Janela aberta com sucesso (fallback)');
+                                setTimeout(function() {
+                                    if (printWindow && !printWindow.closed) {
+                                        printWindow.focus();
+                                        printWindow.print();
+                                    }
+                                }, 1000);
+                            } else {
+                                alert('Erro: Por favor, permita popups para este site.');
+                            }
+                        } catch(err) {
+                            console.error('Erro ao abrir janela:', err);
+                            alert('Erro ao abrir janela de impressão: ' + err.message);
+                        }
+                    }, 300);
+                    
+                    return false;
+                });
+            }
+        }
     </script>
+
+    <!-- Modal de Configuração de Impressão -->
+    <div id="printOptionsModal" class="fixed inset-0 bg-black bg-opacity-50 hidden items-center justify-center z-50">
+        <div class="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 class="text-lg font-semibold mb-4">Opções de Impressão</h3>
+            <form id="printOptionsForm">
+                <div class="space-y-3 mb-4">
+                    <label class="flex items-center">
+                        <input type="checkbox" name="show_payment" value="1" checked class="mr-2">
+                        <span>Formas de Pagamento (Parcelas)</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" name="show_fiscal_info" value="1" checked class="mr-2">
+                        <span>Observações Fiscais</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" name="show_transport" value="1" checked class="mr-2">
+                        <span>Informações de Transporte</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" name="show_rateio" value="1" class="mr-2">
+                        <span>Rateio por Item (conferência)</span>
+                    </label>
+                    <label class="flex items-center">
+                        <input type="checkbox" name="show_tax_estimate" value="1" class="mr-2">
+                        <span>Estimativa de Tributos</span>
+                    </label>
+                </div>
+                <div class="flex justify-end gap-2">
+                    <button type="button" onclick="closePrintModal()" class="px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300">Cancelar</button>
+                    <button type="submit" id="printSubmitBtn" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">Imprimir</button>
+                </div>
+            </form>
+        </div>
+    </div>
 </x-app-layout>

@@ -83,7 +83,19 @@ class ReturnController extends Controller
             $already[$it->id] = (float) ReturnItem::whereIn('return_id', ReturnModel::where('order_id',$order->id)->pluck('id'))
                 ->where('order_item_id',$it->id)->sum('quantity');
         }
-        return view('returns.create', compact('order','items','already'));
+        
+        // Verificar se há NFe transmitida para exibir alerta
+        $hasIssuedNfe = $order->has_successful_nfe;
+        $nfeNote = null;
+        $nfeKey = null;
+        if ($hasIssuedNfe) {
+            try {
+                $nfeNote = $order->latestNfeNoteCompat;
+                $nfeKey = $nfeNote->chave_acesso ?? null;
+            } catch (\Throwable $e) {}
+        }
+        
+        return view('returns.create', compact('order','items','already','hasIssuedNfe','nfeNote','nfeKey'));
     }
 
     public function store(Request $request)
@@ -92,19 +104,24 @@ class ReturnController extends Controller
         $tenantId = auth()->user()->tenant_id;
         $v = $request->validate([
             'order_id' => 'required|exists:orders,id',
-            'refund_type' => 'required|in:abatement,refund,credit',
+            'refund_type' => 'nullable|in:refund',
             'refund_method' => 'nullable|in:cash,card,pix',
             'items' => 'required|array',
             'items.*.order_item_id' => 'required|exists:order_items,id',
             'items.*.quantity' => 'nullable|numeric|min:0',
         ]);
         $order = Order::where('tenant_id',$tenantId)->findOrFail($v['order_id']);
+        // Bloqueios MVP: não permitir devolução em pedido cancelado ou em aberto/orçado
+        $blockedStatuses = ['canceled','open','in_progress'];
+        if (in_array($order->status, $blockedStatuses, true)) {
+            return back()->with('error', 'Este pedido não permite devolução no status atual.');
+        }
         $itemsMap = $order->items()->get()->keyBy('id');
 
         $ret = ReturnModel::create([
             'tenant_id' => $tenantId,
             'order_id' => $order->id,
-            'refund_method' => $v['refund_type'] === 'refund' ? ($v['refund_method'] ?? 'cash') : ($v['refund_type'] === 'credit' ? 'credit' : 'abatement'),
+            'refund_method' => ($v['refund_method'] ?? 'cash'),
             'total_refund' => 0,
             'notes' => $request->input('notes')
         ]);
@@ -143,62 +160,59 @@ class ReturnController extends Controller
                 'unit_price' => $unit,
                 'document' => 'Devolução Pedido #'.$order->id,
                 'note' => 'Devolução',
+                'reason' => 'Devolução de venda',
+                'user_id' => auth()->id(),
             ]);
         }
 
         $ret->update(['total_refund' => $totalRefund]);
 
-        // Registrar auditoria de devolução
-        \App\Models\OrderAudit::create([
+        // Registrar auditoria de devolução (OrderAudit existente)
+        // Montar detalhamento de itens devolvidos (nome, qtd, valor) + texto
+        $itemsDetail = [];
+        $itemsTextParts = [];
+        foreach ($assignedQty as $orderItemId => $qtd) {
+            if ($qtd <= 0) continue;
+            $oi = $itemsMap[$orderItemId] ?? null;
+            if ($oi) {
+                $line = round(((float)$oi->unit_price) * (float)$qtd, 2);
+                $itemsDetail[] = [
+                    'produto' => (string) ($oi->name ?? 'Item'),
+                    'quantidade' => (float) $qtd,
+                    'valor' => $line,
+                ];
+                $itemsTextParts[] = (string) ($oi->name ?? 'Item') . ' x ' . number_format((float)$qtd, 3, ',', '.') . ' (R$ ' . number_format($line, 2, ',', '.') . ')';
+            }
+        }
+        \Log::info('returns.items_detail', [
             'order_id' => $order->id,
-            'user_id' => auth()->id(),
-            'action' => 'returned',
-            'notes' => 'Devolução registrada - Tipo: ' . ($v['refund_type'] === 'credit' ? 'Crédito' : ($v['refund_type'] === 'abatement' ? 'Abatimento' : 'Estorno')) . ' - Valor: R$ ' . number_format($totalRefund, 2, ',', '.'),
-            'changes' => [
-                'return_id' => $ret->id,
-                'refund_type' => $v['refund_type'],
-                'total_refund' => $totalRefund,
-                'items_returned' => $assignedQty,
-                'refund_method' => $v['refund_method'] ?? null
-            ]
+            'assigned_qty' => $assignedQty,
+            'items_detail' => $itemsDetail,
         ]);
 
-        // financeiro: abater, estornar, ou crédito
+        // Removido: evitar duplicidade no /activity (detalhes ficarão no ReturnAudit)
+
+        // Auditoria dedicada de devoluções (ReturnAudit), escopo por tenant
+        try {
+            \App\Models\ReturnAudit::create([
+                'tenant_id' => $tenantId,
+            'user_id' => auth()->id(),
+                'return_id' => $ret->id,
+                'order_id' => $order->id,
+                'action' => 'created',
+                'notes' => 'Devolução do Pedido #' . $order->number . ' - Valor R$ ' . number_format($totalRefund,2,',','.') ,
+                'changes' => [
+                'refund_type' => $v['refund_type'],
+                    'refund_method' => $v['refund_method'] ?? null,
+                'total_refund' => $totalRefund,
+                    'itens' => $itemsDetail,
+                    'detalhes' => implode('; ', $itemsTextParts),
+                ],
+            ]);
+        } catch (\Throwable $e) { }
+
+        // financeiro: Estorno imediato (MVP)
         if ($totalRefund > 0) {
-            if ($v['refund_type'] === 'credit') {
-                // Crédito ao cliente: título negativo em aberto, com compensação automática nos títulos do pedido
-                $credit = Receivable::create([
-                    'tenant_id' => $tenantId,
-                    'client_id' => $order->client_id,
-                    'order_id' => $order->id,
-                    'description' => 'Crédito por Devolução Pedido '.$order->number,
-                    'amount' => -$totalRefund,
-                    'due_date' => now()->toDateString(),
-                    'status' => 'open',
-                    'payment_method' => 'credit',
-                ]);
-                $left = $this->applyCompensationToOrderReceivables($order, abs((float)$credit->amount));
-                $credit->amount = -round($left, 2);
-                if ($left <= 0.001) { $credit->status = 'canceled'; }
-                $credit->save();
-            } elseif ($v['refund_type'] === 'abatement') {
-                // Abatimento: título negativo em aberto, com compensação automática nos títulos do pedido
-                $abat = Receivable::create([
-                    'tenant_id' => $tenantId,
-                    'client_id' => $order->client_id,
-                    'order_id' => $order->id,
-                    'description' => 'Abatimento Devolução Pedido '.$order->number,
-                    'amount' => -$totalRefund,
-                    'due_date' => now()->toDateString(),
-                    'status' => 'open',
-                    'payment_method' => 'abatement',
-                ]);
-                $left = $this->applyCompensationToOrderReceivables($order, abs((float)$abat->amount));
-                $abat->amount = -round($left, 2);
-                if ($left <= 0.001) { $abat->status = 'canceled'; }
-                $abat->save();
-            } else { // refund immediate
-                // Estorno imediato: título negativo pago (impacta caixa)
                 Receivable::create([
                     'tenant_id' => $tenantId,
                     'client_id' => $order->client_id,
@@ -210,8 +224,126 @@ class ReturnController extends Controller
                     'received_at' => now(),
                     'payment_method' => $v['refund_method'] ?? 'cash',
                 ]);
-            }
+            // Atualizar saldo do caixa do dia
+            try {
+                $dailyCash = \App\Models\DailyCash::where('tenant_id', $tenantId)
+                    ->whereDate('date', now()->toDateString())
+                    ->first();
+                if ($dailyCash) { $dailyCash->updateCurrentBalance(); }
+            } catch (\Throwable $e) { /* ignore */ }
         }
+
+        // Atualizar status do pedido conforme devolução (MVP)
+        try {
+            $order->refresh();
+            $order->load('items'); // Carregar items para acessar returned_quantity
+            
+            // Verificar se TODOS os itens do pedido foram TOTALMENTE devolvidos (somando devoluções anteriores + atuais)
+            $allReturned = true; 
+            $anyReturned = false;
+            $hasItems = false; // Verificar se o pedido tem itens
+            
+            foreach ($order->items as $it) {
+                $hasItems = true;
+                $sold = (float) $it->quantity;
+                // Usa accessor returned_quantity (calcula devoluções anteriores)
+                $returnedBefore = $it->returned_quantity;
+                $returnedNow = (float) ($assignedQty[$it->id] ?? 0);
+                $returnedTotal = round($returnedBefore + $returnedNow, 3);
+                
+                // Se está devolvendo algo nesta devolução atual
+                if ($returnedNow > 0) { 
+                    $anyReturned = true; 
+                }
+                
+                // Só marca como allReturned se este item específico foi TOTALMENTE devolvido
+                // E só é "allReturned" se TODOS os itens do pedido foram totalmente devolvidos
+                // IMPORTANTE: verificar se returnedTotal é >= sold (com tolerância para arredondamento)
+                if ($returnedTotal + 1e-6 < $sold) { 
+                    $allReturned = false; // Este item NÃO foi totalmente devolvido (ainda há quantidade restante)
+                }
+            }
+
+            $oldStatus = $order->status;
+            $newStatus = $oldStatus;
+            
+            // Regras de negócio para atualização de status:
+            // 1. Só pode cancelar se TODOS os itens foram TOTALMENTE devolvidos (somando devoluções anteriores + atuais)
+            // 2. Só pode cancelar se TODOS os valores foram estornados (sem títulos em aberto)
+            // 3. Se há devoluções parciais (algum item ainda tem quantidade restante) → partial_returned
+            // 4. Se não há devoluções → mantém status atual
+            
+            // Se não há itens, não faz sentido cancelar
+            if (!$hasItems) {
+                // Pedido sem itens - manter status atual
+            } elseif ($allReturned) {
+                // Todos os itens foram totalmente devolvidos
+                // IMPORTANTE: Verificar se todos os valores foram estornados antes de cancelar
+                // Não pode cancelar se ainda há títulos em aberto do pedido
+                $hasOpenReceivables = \App\Models\Receivable::where('tenant_id', $tenantId)
+                    ->where('order_id', $order->id)
+                    ->where('status', '!=', 'canceled')
+                    ->where('status', '!=', 'paid')
+                    ->where('amount', '>', 0)
+                    ->exists();
+                
+                // Só cancela se todos os itens foram devolvidos E não há títulos em aberto
+                // Caso contrário, marca como partial_returned (ainda há pendências financeiras)
+                if (!$hasOpenReceivables) {
+                    // Todos os itens devolvidos E todos os valores estornados → CANCELADO
+                    $newStatus = 'canceled';
+                } else {
+                    // Todos os itens devolvidos mas ainda há títulos em aberto → DEVOLUÇÃO PARCIAL
+                    $newStatus = 'partial_returned';
+                    $anyReturned = true; // Garante que será tratado como devolução
+                }
+            } elseif ($anyReturned || $order->getItemsWithPartialReturns()->isNotEmpty()) {
+                // Há devoluções parciais (algum item ainda tem quantidade restante)
+                // OU já havia devoluções anteriores (verificado pelo getItemsWithPartialReturns)
+                // IMPORTANTE: Isso garante que mesmo se você "tirar" um item do formulário,
+                // mas ainda há outros itens com devoluções anteriores ou atuais, o status será partial_returned
+                $newStatus = 'partial_returned';
+            }
+            // Se não entrou em nenhuma condição acima, mantém o status atual ($newStatus = $oldStatus)
+
+            if ($newStatus !== $oldStatus) {
+                $order->status = $newStatus;
+                $order->save();
+                // Auditoria de mudança de status
+                \App\Models\OrderAudit::create([
+                    'order_id' => $order->id,
+                    'user_id' => auth()->id(),
+                    'action' => 'status_changed',
+                    'notes' => 'Status alterado por devolução',
+                    'changes' => [ 'status' => [ 'old' => $oldStatus, 'new' => $newStatus ] ],
+                ]);
+            }
+
+            // Sugerir NF-e de devolução quando parcial e houver NF-e de saída emitida
+            if ($newStatus === 'partial_returned') {
+                // Usa accessor hasSuccessfulNfe do Order
+                $hasIssuedNfe = $order->has_successful_nfe;
+                $refKey = null;
+                $nfeNumber = null;
+                if ($hasIssuedNfe) {
+                    try {
+                        $lastNfe = $order->latestNfeNoteCompat;
+                        $refKey = $lastNfe->chave_acesso ?? null;
+                        $nfeNumber = $lastNfe->numero_nfe ?? null;
+                    } catch (\Throwable $e) {}
+                }
+                if ($hasIssuedNfe) {
+                    $message = 'Devolução parcial registrada. Este pedido possui NF-e transmitida (Nº ' . ($nfeNumber ?? '—') . '). ';
+                    $message .= 'Para manter a conformidade fiscal, você deve emitir uma NF-e de devolução (tipo 1 ou 1A) que referencia a NF-e original.';
+                    return redirect()->route('orders.edit', $order->id)
+                        ->with('warning', $message)
+                        ->with('nfe_preset_operation', 'devolucao_venda')
+                        ->with('nfe_auto_open', false)
+                        ->with('nfe_reference_key', $refKey)
+                        ->with('nfe_return_qty', $assignedQty);
+                }
+            }
+        } catch (\Throwable $e) { /* ignore status update issues */ }
 
         // Se solicitado, redireciona para emissão de NF-e de devolução do próprio pedido
         if ($request->boolean('emitNfe', false)) {
@@ -230,7 +362,7 @@ class ReturnController extends Controller
                 ->with('nfe_return_qty', $assignedQty);
         }
 
-        return redirect()->route('returns.index')->with('success','Devolução registrado.');
+        return redirect()->route('returns.index')->with('success','Devolução registrada.');
     }
 
     /**

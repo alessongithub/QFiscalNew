@@ -170,10 +170,15 @@
                             @endif
                             
                             @if($isCanceled)
-                                <!-- Para OS cancelada, apenas botão de impressão do cancelamento -->
+                                <!-- Para OS cancelada -->
                                 <a href="{{ route('service_orders.cancellation_receipt', $o) }}" target="_blank" title="Imprimir Cancelamento" class="inline-flex items-center justify-center w-8 h-8 rounded bg-red-50 hover:bg-red-100 text-red-700">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"/></svg>
                                 </a>
+                                @if(auth()->user()->hasPermission('service_orders.email'))
+                                    <a href="{{ route('service_orders.email_form', $o) }}" title="E-mail - OS cancelada" class="inline-flex items-center justify-center w-8 h-8 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 24 24" fill="currentColor"><path d="M1.5 4.5A1.5 1.5 0 013 3h18a1.5 1.5 0 011.5 1.5v15a1.5 1.5 0 01-1.5 1.5H3A1.5 1.5 0 011.5 19.5v-15zM3 6.44V19.5h18V6.44l-8.553 5.702a2 2 0 01-2.894 0L3 6.44zM20.25 4.5H3.75L12 10.5l8.25-6z"/></svg>
+                                    </a>
+                                @endif
                             @else
                                 @if(auth()->user()->hasPermission('service_orders.view'))
                                 <a href="{{ route('service_orders.print', $o) }}" target="_blank" title="Imprimir OS" class="inline-flex items-center justify-center w-8 h-8 rounded bg-gray-50 hover:bg-gray-100 text-gray-700">

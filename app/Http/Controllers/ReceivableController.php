@@ -119,6 +119,22 @@ class ReceivableController extends Controller
             'created_by' => auth()->id(),
         ]);
 
+        // Audit: created
+        try {
+            $created = Receivable::where('tenant_id', $tenantId)->latest('id')->first();
+            if ($created) {
+                \App\Models\FinanceAudit::create([
+                    'tenant_id' => $tenantId,
+                    'user_id' => auth()->id(),
+                    'entity_type' => 'receivable',
+                    'entity_id' => $created->id,
+                    'action' => 'created',
+                    'notes' => 'Recebível lançado: ' . ($created->description ?? ''),
+                    'changes' => $created->toArray(),
+                ]);
+            }
+        } catch (\Throwable $e) { /* ignore audit errors */ }
+
         return redirect()->route('receivables.index')->with('success', 'Recebível lançado com sucesso.');
     }
 
@@ -189,8 +205,56 @@ class ReceivableController extends Controller
             $receivable->received_at = now();
         }
 
+        $original = $receivable->getOriginal();
         $receivable->update(array_merge($validated, ['updated_by' => auth()->id()]));
-        $receivable->save();
+
+        // Audit: updated
+        try {
+            $fresh = $receivable->fresh();
+            $newValues = $fresh->toArray();
+            $diff = [];
+            $label = function(string $key, $val) use ($fresh) {
+                if ($val === null || $val === '') return '';
+                switch ($key) {
+                    case 'due_date':
+                    case 'received_at':
+                        try { return \Carbon\Carbon::parse($val)->format('d/m/Y'); } catch (\Throwable $e) { return (string)$val; }
+                    case 'amount':
+                        return 'R$ ' . number_format((float)$val, 2, ',', '.');
+                    case 'status':
+                        $map = ['open' => 'Em aberto', 'partial' => 'Parcial', 'paid' => 'Pago', 'canceled' => 'Cancelado', 'reversed' => 'Estornado'];
+                        return $map[$val] ?? (string)$val;
+                    case 'payment_method':
+                        $map = ['cash' => 'Dinheiro', 'card' => 'Cartão', 'pix' => 'Pix'];
+                        return $map[$val] ?? (string)$val;
+                    case 'client_id':
+                        $client = $fresh->client ?: (\App\Models\Client::find($val));
+                        return $client?->name ?? ('Cliente #' . $val);
+                    default:
+                        return (string)$val;
+                }
+            };
+            foreach (array_keys($validated) as $k) {
+                $oldRaw = $original[$k] ?? null;
+                $newRaw = $newValues[$k] ?? null;
+                $oldNorm = $label($k, $oldRaw);
+                $newNorm = $label($k, $newRaw);
+                if ($oldNorm !== $newNorm) {
+                    $diff[$this->humanField($k)] = ['old' => $oldNorm, 'new' => $newNorm];
+                }
+            }
+            if (!empty($diff)) {
+                \App\Models\FinanceAudit::create([
+                    'tenant_id' => auth()->user()->tenant_id,
+                    'user_id' => auth()->id(),
+                    'entity_type' => 'receivable',
+                    'entity_id' => $receivable->id,
+                    'action' => 'updated',
+                    'notes' => 'Recebível atualizado',
+                    'changes' => $diff,
+                ]);
+            }
+        } catch (\Throwable $e) { /* ignore */ }
 
         return redirect()->route('receivables.index')->with('success', 'Recebível atualizado.');
     }
@@ -224,6 +288,7 @@ class ReceivableController extends Controller
             'cancel_reason' => 'required|string|min:10|max:500',
         ]);
         
+        $prevStatus = $receivable->status;
         $receivable->update([
             'status' => 'canceled',
             'received_at' => null,
@@ -233,6 +298,19 @@ class ReceivableController extends Controller
             'canceled_by' => auth()->id(),
         ]);
         
+        // Audit: canceled
+        try {
+            \App\Models\FinanceAudit::create([
+                'tenant_id' => auth()->user()->tenant_id,
+                'user_id' => auth()->id(),
+                'entity_type' => 'receivable',
+                'entity_id' => $receivable->id,
+                'action' => 'canceled',
+                'notes' => 'Motivo: ' . ($validated['cancel_reason'] ?? ''),
+                'changes' => ['status' => ['old' => ($prevStatus === 'open' ? 'Em aberto' : $prevStatus), 'new' => 'Cancelado']],
+            ]);
+        } catch (\Throwable $e) { }
+
         return redirect()->route('receivables.index')->with('success', 'Recebimento cancelado com sucesso.');
     }
 
@@ -252,12 +330,26 @@ class ReceivableController extends Controller
             'received_at' => 'nullable|date',
         ]);
 
+        $oldStatus = $receivable->status;
         $receivable->status = 'paid';
         $receivable->payment_method = $data['payment_method'] ?? $receivable->payment_method;
         $receivable->received_at = isset($data['received_at']) ? $data['received_at'] : now();
         $receivable->received_by = auth()->id();
         $receivable->updated_by = auth()->id();
         $receivable->save();
+
+        // Audit: paid
+        try {
+            \App\Models\FinanceAudit::create([
+                'tenant_id' => auth()->user()->tenant_id,
+                'user_id' => auth()->id(),
+                'entity_type' => 'receivable',
+                'entity_id' => $receivable->id,
+                'action' => 'paid',
+                'notes' => 'Baixa manual',
+                'changes' => [ 'status' => ['old' => $oldStatus, 'new' => 'Pago'], 'payment_method' => ($receivable->payment_method ? (['cash'=>'Dinheiro','card'=>'Cartão','pix'=>'Pix'][$receivable->payment_method] ?? $receivable->payment_method) : null) ],
+            ]);
+        } catch (\Throwable $e) { }
 
         return back()->with('success', 'Recebível baixado como pago.');
     }
@@ -307,6 +399,18 @@ class ReceivableController extends Controller
             'paid_at' => now(),
             'created_by' => auth()->id(),
         ]);
+        // Audit: reversed
+        try {
+            \App\Models\FinanceAudit::create([
+                'tenant_id' => auth()->user()->tenant_id,
+                'user_id' => auth()->id(),
+                'entity_type' => 'receivable',
+                'entity_id' => $receivable->id,
+                'action' => 'reversed',
+                'notes' => 'Motivo: ' . ($validated['reverse_reason'] ?? ''),
+                'changes' => ['status' => ['old' => 'paid', 'new' => 'reversed']],
+            ]);
+        } catch (\Throwable $e) { }
 
         return redirect()->route('receivables.index')->with('success', 'Estorno criado com sucesso. O recebimento original foi preservado para auditoria.');
     }
@@ -548,7 +652,37 @@ class ReceivableController extends Controller
             ]);
         }
 
+        // Audit: bulk_paid
+        try {
+            \App\Models\FinanceAudit::create([
+                'tenant_id' => $tenantId,
+                'user_id' => auth()->id(),
+                'entity_type' => 'receivable',
+                'entity_id' => 0,
+                'action' => 'bulk_paid',
+                'notes' => "Baixa em lote de {$count} títulos. Total R$ " . number_format($sum,2,',','.'),
+                'changes' => ['ids' => $ids],
+            ]);
+        } catch (\Throwable $e) { }
+
         return back()->with('success', "Baixa em lote concluída: {$count} títulos, total R$ " . number_format($sum,2,',','.'));
+    }
+
+    private function humanField(string $key): string
+    {
+        $map = [
+            'client_id' => 'Cliente',
+            'description' => 'Descrição',
+            'amount' => 'Valor',
+            'due_date' => 'Vencimento',
+            'status' => 'Status',
+            'payment_method' => 'Forma de pagamento',
+            'document_number' => 'Documento',
+            'tpag_override' => 'TPag (override)',
+            'tpag_hint' => 'Sugestão de pagamento',
+            'received_at' => 'Recebido em',
+        ];
+        return $map[$key] ?? ucfirst(str_replace('_',' ',$key));
     }
 }
 

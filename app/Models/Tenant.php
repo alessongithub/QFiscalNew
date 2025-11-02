@@ -55,6 +55,16 @@ class Tenant extends Model
         return $this->hasMany(User::class);
     }
 
+    public function storageUsage()
+    {
+        return $this->hasOne(TenantStorageUsage::class);
+    }
+
+    public function storageAddons()
+    {
+        return $this->hasMany(StorageAddon::class)->where('status', 'active');
+    }
+
     // Mutators
     public function setCnpjAttribute($value)
     {

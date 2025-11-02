@@ -37,9 +37,9 @@
                                        name="ncm" 
                                        value="{{ old('ncm') }}" 
                                        class="w-full border border-gray-300 rounded-lg px-4 py-3 font-mono text-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 @error('ncm') border-red-500 @enderror" 
-                                       placeholder="Ex: 24011000" 
-                                       maxlength="8"
-                                       pattern="[0-9]{8}"
+                                       placeholder="Ex: 24.01.10.00 ou 24011000" 
+                                       maxlength="20"
+                                       pattern="[0-9\.]{4,20}"
                                        required>
                                 <div class="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
                                     <i class="fas fa-hashtag text-gray-400"></i>
@@ -51,7 +51,7 @@
                                     {{ $message }}
                                 </div>
                             @enderror
-                            <p class="mt-2 text-sm text-gray-500">Código NCM deve conter exatamente 8 dígitos numéricos</p>
+                            <p class="mt-2 text-sm text-gray-500">Aceita com ou sem pontos; será salvo apenas com dígitos</p>
                         </div>
 
                         <!-- Campo Requer GTIN -->

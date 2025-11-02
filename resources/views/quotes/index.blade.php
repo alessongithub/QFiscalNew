@@ -236,11 +236,20 @@
                                             @endif
                                             
                                             @if(auth()->user()->hasPermission('quotes.view'))
-                                                <a href="{{ route('quotes.email_form', $q) }}" title="E-mail" class="inline-flex items-center justify-center w-8 h-8 rounded-md text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition duration-150 ease-in-out">
+                                                @php $isApproved = ($q->status === 'approved'); @endphp
+                                                @if($isApproved)
+                                                    <span title="Orçamento aprovado e convertido em pedido. Use o email do pedido." class="inline-flex items-center justify-center w-8 h-8 rounded-md text-sm font-medium text-indigo-400 bg-indigo-50 opacity-50 cursor-not-allowed">
+                                                @else
+                                                    <a href="{{ route('quotes.email_form', $q) }}" title="E-mail" class="inline-flex items-center justify-center w-8 h-8 rounded-md text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition duration-150 ease-in-out">
+                                                @endif
                                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8m-18 8h18a2 2 0 002-2V8a2 2 0 00-2-2H3a2 2 0 00-2 2v6a2 2 0 002 2z" />
                                                     </svg>
-                                                </a>
+                                                @if($isApproved)
+                                                    </span>
+                                                @else
+                                                    </a>
+                                                @endif
                                             @endif
                                             
                                             @if(auth()->user()->hasPermission('quotes.view') && !$isExpired)

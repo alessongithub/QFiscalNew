@@ -201,7 +201,9 @@ class InboundInvoiceController extends Controller
                             'quantity' => $it->quantity,
                             'unit_price' => $it->unit_price,
                             'document' => 'NFe '.$inbound->number.'/'.$inbound->series,
-                            'note' => 'Entrada adicional via XML (já vinculado)'
+                            'note' => 'Entrada adicional via XML (já vinculado)',
+                            'reason' => 'Entrada NFe (adicional)',
+                            'user_id' => auth()->id(),
                         ]);
                         continue;
                     }
@@ -225,6 +227,8 @@ class InboundInvoiceController extends Controller
                     'unit_price' => $it->unit_price,
                     'document' => 'NFe '.$inbound->number.'/'.$inbound->series,
                     'note' => 'Entrada via XML',
+                    'reason' => 'Entrada NFe',
+                    'user_id' => auth()->id(),
                 ]);
                 // marcar item como vinculado
                 $it->update([
@@ -283,6 +287,8 @@ class InboundInvoiceController extends Controller
                     'unit_price' => $it->unit_price,
                     'document' => 'NFe '.$inbound->number.'/'.$inbound->series,
                     'note' => 'Entrada via XML (novo produto)',
+                    'reason' => 'Entrada NFe (novo produto)',
+                    'user_id' => auth()->id(),
                 ]);
                 
                 // Registrar crédito fiscal se houver ICMS
@@ -380,6 +386,8 @@ class InboundInvoiceController extends Controller
                 'unit_price' => $item->unit_price,
                 'document' => 'Estorno vinculação NFe '.$inbound->number.'/'.$inbound->series,
                 'note' => 'Estorno de entrada via desvinculação',
+                'reason' => 'Estorno NFe (desvincular)',
+                'user_id' => auth()->id(),
             ]);
         }
         $item->update([

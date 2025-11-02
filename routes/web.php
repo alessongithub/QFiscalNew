@@ -109,6 +109,13 @@ Route::middleware(['auth', \App\Http\Middleware\TenantMiddleware::class])->group
 
     Route::get('/dashboard', [App\Http\Controllers\DashboardController::class, 'index'])->name('dashboard');
 
+    // Storage (monitoramento e compra de espaço)
+    Route::prefix('storage-management')->group(function () {
+        Route::get('/', [App\Http\Controllers\StorageController::class, 'index'])->name('storage.index');
+        Route::get('/upgrade', [App\Http\Controllers\StorageController::class, 'upgrade'])->name('storage.upgrade');
+        Route::post('/purchase-addon', [App\Http\Controllers\StorageController::class, 'purchaseAddon'])->name('storage.purchase-addon');
+    });
+
     // Rotas de Clientes
     Route::resource('clients', ClientController::class);
 
@@ -250,6 +257,9 @@ Route::post('service_orders/{service_order}/extend-warranty', [ServiceOrderContr
     Route::delete('orders/{order}/items/{item}', [OrderController::class, 'removeItem'])->name('orders.remove_item');
     Route::post('orders/{order}/fulfill', [OrderController::class, 'fulfill'])->name('orders.fulfill');
     Route::post('orders/{order}/reopen', [OrderController::class, 'reopen'])->name('orders.reopen');
+    Route::get('orders/{order}/prepare-reopen-adjustment', [OrderController::class, 'prepareReopenAdjustment'])->name('orders.prepare_reopen_adjustment');
+    Route::post('orders/{order}/reopen-with-adjustment', [OrderController::class, 'reopenWithAdjustment'])->name('orders.reopen.with_adjustment');
+    Route::post('orders/{order}/adjust-with-returns', [OrderController::class, 'adjustWithReturns'])->name('orders.adjust_with_returns');
     Route::post('orders/{order}/issue-nfe', [OrderController::class, 'issueNfe'])->name('orders.issue_nfe');
     Route::get('orders/{order}/whatsapp', [OrderController::class, 'whatsapp'])->name('orders.whatsapp');
     // E-mail do Pedido
@@ -306,13 +316,21 @@ Route::post('service_orders/{service_order}/extend-warranty', [ServiceOrderContr
     Route::get('/pos/{order}/print', [POSController::class, 'printOrder'])->name('pos.print');
     Route::get('/pos/{order}/print-80', [POSController::class, 'printOrder80'])->name('pos.print80');
 
-    // Configurações
+    // Configurações gerais
     Route::get('/settings', [SettingsController::class, 'edit'])->name('settings.edit');
     Route::put('/settings', [SettingsController::class, 'update'])->name('settings.update');
+
+    // Configurações Fiscais (página dedicada)
+    Route::get('/settings/fiscal', [SettingsController::class, 'editFiscal'])->name('settings.fiscal.edit');
+    Route::put('/settings/fiscal', [SettingsController::class, 'updateFiscal'])->name('settings.fiscal.update');
+
+    // Atividades do Sistema
+    Route::get('/activity', [App\Http\Controllers\ActivityController::class, 'index'])->name('activity.index');
 
     // Tributações (CRUD)
     Route::resource('tax_rates', TaxRateController::class)->parameters(['tax_rates' => 'tax_rate'])->except(['show']);
     Route::get('tax_rates/{tax_rate}', [TaxRateController::class, 'show'])->name('tax_rates.show');
+    Route::get('tax_rates/{tax_rate}/history', [TaxRateController::class, 'history'])->name('tax_rates.history');
     Route::resource('tax_credits', TaxCreditController::class)->parameters(['tax_credits' => 'tax_credit']);
     Route::get('tax_credits/{product_id}/suggestion', [TaxCreditController::class, 'getIcmsSuggestion'])->name('tax_credits.suggestion');
     Route::get('tax_credits/{product_id}/available', [TaxCreditController::class, 'getAvailableCredits'])->name('tax_credits.available');
@@ -337,6 +355,8 @@ Route::post('service_orders/{service_order}/extend-warranty', [ServiceOrderContr
     Route::put('/receipts/{receipt}', [ReceiptController::class, 'update'])->name('receipts.update');
     Route::delete('/receipts/{receipt}', [ReceiptController::class, 'destroy'])->name('receipts.destroy');
     Route::get('/receipts/{receipt}/print', [ReceiptController::class, 'print'])->name('receipts.print');
+    Route::get('/receipts/{receipt}/email', [ReceiptController::class, 'emailForm'])->name('receipts.email_form');
+    Route::post('/receipts/{receipt}/email', [ReceiptController::class, 'sendEmail'])->name('receipts.email_send');
 
     // Calendário
     Route::get('/calendar', [CalendarController::class, 'index'])->name('calendar.index');
@@ -355,13 +375,21 @@ Route::post('service_orders/{service_order}/extend-warranty', [ServiceOrderContr
     })->name('webapi.ncm.requires_gtin');
 });
 
+// Rota para admin acessar partner/tenants (deve vir antes da rota com auth:partner)
+Route::middleware(['web','auth', \App\Http\Middleware\AdminMiddleware::class])->group(function(){
+    Route::get('/partner/tenants', [App\Http\Controllers\Partner\TenantsController::class, 'index'])->name('admin.partner.tenants');
+});
+
 // Painel do Parceiro
 Route::middleware(['web','auth:partner'])->group(function(){
     Route::get('/partner', [App\Http\Controllers\PartnerDashboardController::class, 'index'])->name('partner.dashboard');
+    Route::get('/partner/invite-client', [App\Http\Controllers\PartnerDashboardController::class, 'inviteClient'])->name('partner.invite-client');
+    Route::post('/partner/generate-invite-link', [App\Http\Controllers\PartnerDashboardController::class, 'generateInviteLink'])->name('partner.generate-invite-link');
     Route::prefix('partner')->name('partner.')->group(function(){
         Route::get('tenants', [App\Http\Controllers\Partner\TenantsController::class, 'index'])->name('tenants.index');
         Route::get('invoices', [App\Http\Controllers\Partner\InvoicesController::class, 'index'])->name('invoices.index');
         Route::get('payments', [App\Http\Controllers\Partner\PaymentsController::class, 'index'])->name('payments.index');
+        Route::get('storage-usage', [App\Http\Controllers\PartnerDashboardController::class, 'storageUsage'])->name('storage-usage');
     });
 });
 
@@ -379,8 +407,11 @@ Route::middleware(['auth', \App\Http\Middleware\AdminMiddleware::class])->prefix
     Route::get('/smtp', [App\Http\Controllers\Admin\AdminController::class, 'smtpSettings'])->name('smtp-settings');
     Route::post('/smtp', [App\Http\Controllers\Admin\AdminController::class, 'updateSmtpSettings'])->name('smtp-settings.update');
     Route::get('/tenants', [App\Http\Controllers\Admin\AdminController::class, 'tenants'])->name('tenants');
+    Route::get('/tenants/{tenant}/edit', [App\Http\Controllers\Admin\AdminController::class, 'editTenant'])->name('tenants.edit');
+    Route::put('/tenants/{tenant}', [App\Http\Controllers\Admin\AdminController::class, 'updateTenant'])->name('tenants.update');
     Route::post('/tenants/{tenant}/toggle', [App\Http\Controllers\Admin\AdminController::class, 'toggleTenantStatus'])->name('tenants.toggle');
     Route::get('/payments', [App\Http\Controllers\Admin\AdminController::class, 'payments'])->name('payments');
+    Route::get('/storage-usage', [App\Http\Controllers\Admin\AdminController::class, 'storageUsage'])->name('storage-usage');
     
             // Rotas de Planos
         Route::get('/plans', [App\Http\Controllers\Admin\AdminController::class, 'plans'])->name('plans');
@@ -398,6 +429,7 @@ Route::middleware(['auth', \App\Http\Middleware\AdminMiddleware::class])->prefix
     Route::get('/news', [App\Http\Controllers\Admin\NewsController::class, 'index'])->name('news.index');
     Route::get('/news/create', [App\Http\Controllers\Admin\NewsController::class, 'create'])->name('news.create');
     Route::post('/news', [App\Http\Controllers\Admin\NewsController::class, 'store'])->name('news.store');
+    Route::delete('/news/bulk-delete', [App\Http\Controllers\Admin\NewsController::class, 'bulkDelete'])->name('news.bulk-delete');
     Route::get('/news/{news}/edit', [App\Http\Controllers\Admin\NewsController::class, 'edit'])->name('news.edit');
     Route::put('/news/{news}', [App\Http\Controllers\Admin\NewsController::class, 'update'])->name('news.update');
     Route::delete('/news/{news}', [App\Http\Controllers\Admin\NewsController::class, 'destroy'])->name('news.destroy');

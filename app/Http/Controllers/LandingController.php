@@ -9,7 +9,11 @@ class LandingController extends Controller
 {
     public function index()
     {
-        $plans = Plan::where('is_active', true)->orderBy('price')->get();
+        // Buscar apenas planos ativos
+        $plans = Plan::where('active', true)
+            ->whereNull('deleted_at') // Excluir soft deletes
+            ->orderBy('price')
+            ->get();
         
         return view('landing', compact('plans'));
     }

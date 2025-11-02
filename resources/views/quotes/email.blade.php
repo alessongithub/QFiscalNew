@@ -33,6 +33,18 @@
 				</div>
 			@endif
 
+			@if($quote->status === 'canceled')
+			<div class="mb-6 bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-start gap-3">
+				<svg class="w-5 h-5 text-yellow-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+					<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+				</svg>
+				<div class="text-yellow-900">
+					<div class="font-semibold">Orçamento Cancelado</div>
+					<div class="text-sm mt-1">Este orçamento foi cancelado. Considere explicar o motivo do cancelamento na mensagem para o cliente.</div>
+				</div>
+			</div>
+			@endif
+
 			<div class="bg-white overflow-hidden shadow-lg rounded-xl">
 				<div class="px-6 py-4 border-b border-gray-200 bg-gray-50">
 					<div class="flex items-center justify-between">

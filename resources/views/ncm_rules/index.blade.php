@@ -5,9 +5,15 @@
                 <i class="fas fa-barcode mr-2"></i>
                 Regras NCM → GTIN
             </h2>
+            @if(auth()->user()->is_admin)
             <a href="{{ route('ncm_rules.create') }}" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg font-medium transition duration-150 ease-in-out">
                 <i class="fas fa-plus mr-2"></i>Nova Regra
             </a>
+            @else
+            <button type="button" class="px-4 py-2 rounded-lg font-medium bg-gray-300 text-gray-600 cursor-not-allowed" title="Apenas o administrador pode criar regras.">
+                <i class="fas fa-lock mr-2"></i>Nova Regra
+            </button>
+            @endif
         </div>
     </x-slot>
 
@@ -186,18 +192,27 @@
                                 </td>
                                 <td class="px-6 py-4 whitespace-nowrap text-center">
                                     <div class="flex items-center justify-center space-x-2">
-                                        <a href="{{ route('ncm_rules.edit', $r) }}" 
-                                           class="inline-flex items-center px-3 py-1 border border-blue-300 rounded-md text-sm font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 transition duration-150 ease-in-out">
-                                            <i class="fas fa-edit mr-1"></i>Editar
-                                        </a>
-                                        <form action="{{ route('ncm_rules.destroy', $r) }}" method="POST" class="inline" 
-                                              onsubmit="return confirm('Tem certeza que deseja excluir esta regra NCM {{ $r->ncm }}?');">
-                                            @csrf @method('DELETE')
-                                            <button type="submit" 
-                                                    class="inline-flex items-center px-3 py-1 border border-red-300 rounded-md text-sm font-medium text-red-700 bg-red-50 hover:bg-red-100 transition duration-150 ease-in-out">
-                                                <i class="fas fa-trash mr-1"></i>Excluir
+                                        @if(auth()->user()->is_admin)
+                                            <a href="{{ route('ncm_rules.edit', $r) }}" 
+                                               class="inline-flex items-center px-3 py-1 border border-blue-300 rounded-md text-sm font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 transition duration-150 ease-in-out">
+                                                <i class="fas fa-edit mr-1"></i>Editar
+                                            </a>
+                                            <form action="{{ route('ncm_rules.destroy', $r) }}" method="POST" class="inline" 
+                                                  onsubmit="return confirm('Tem certeza que deseja excluir esta regra NCM {{ $r->ncm }}?');">
+                                                @csrf @method('DELETE')
+                                                <button type="submit" 
+                                                        class="inline-flex items-center px-3 py-1 border border-red-300 rounded-md text-sm font-medium text-red-700 bg-red-50 hover:bg-red-100 transition duration-150 ease-in-out">
+                                                    <i class="fas fa-trash mr-1"></i>Excluir
+                                                </button>
+                                            </form>
+                                        @else
+                                            <button type="button" class="inline-flex items-center px-3 py-1 border border-gray-300 rounded-md text-sm font-medium text-gray-500 bg-gray-100 cursor-not-allowed" title="Somente administrador pode editar.">
+                                                <i class="fas fa-lock mr-1"></i>Editar
                                             </button>
-                                        </form>
+                                            <button type="button" class="inline-flex items-center px-3 py-1 border border-gray-300 rounded-md text-sm font-medium text-gray-500 bg-gray-100 cursor-not-allowed" title="Somente administrador pode excluir.">
+                                                <i class="fas fa-lock mr-1"></i>Excluir
+                                            </button>
+                                        @endif
                                     </div>
                                 </td>
                             </tr>

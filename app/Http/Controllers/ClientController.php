@@ -5,9 +5,11 @@ namespace App\Http\Controllers;
 use App\Models\Client;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use App\Traits\StorageLimitCheck;
 
 class ClientController extends Controller
 {
+    use StorageLimitCheck;
     public function search(Request $request)
     {
         abort_unless(auth()->user()->hasPermission('clients.view'), 403);
@@ -113,11 +115,19 @@ class ClientController extends Controller
             return back()->with('error', "Limite de {$maxClients} clientes atingido no plano {$planName}. <a href='{$upgradeUrl}' class='text-blue-600 hover:text-blue-800 underline'>Faça upgrade do seu plano</a> para adicionar mais clientes.");
         }
 
+        // Verificar limite de storage de dados antes de criar
+        $estimatedSize = 4096; // ~4 KB estimado por cliente
+        if (!$this->checkStorageLimit('data', $estimatedSize)) {
+            return back()->withErrors([
+                'storage' => $this->getStorageLimitErrorMessage('data')
+            ])->withInput();
+        }
+
         $validated = $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'nullable|email|max:255',
             'phone' => 'nullable|string|max:20',
-            'cpf_cnpj' => 'required|string|unique:clients,cpf_cnpj',
+            'cpf_cnpj' => 'required|string|unique:clients,cpf_cnpj,NULL,id,tenant_id,' . $user->tenant_id,
             'ie_rg' => 'nullable|string|max:50',
             'type' => 'required|in:pf,pj',
             'address' => 'nullable|string|max:255',
@@ -143,7 +153,24 @@ class ClientController extends Controller
         // Adicionar tenant_id
         $validated['tenant_id'] = $user->tenant_id;
 
-        Client::create($validated);
+        try {
+            $client = Client::create($validated);
+        } catch (\Illuminate\Database\QueryException $e) {
+            if ((int)($e->errorInfo[1] ?? 0) === 1062) {
+                return back()->withErrors(['cpf_cnpj' => 'Já existe um cliente com este CPF/CNPJ neste tenant.'])->withInput();
+            }
+            throw $e;
+        }
+        \App\Models\ClientAudit::create([
+            'tenant_id' => $user->tenant_id,
+            'user_id' => auth()->id(),
+            'client_id' => $client->id,
+            'action' => 'created',
+            'changes' => [ 'name' => $client->name, 'cpf_cnpj' => $client->cpf_cnpj, 'status' => $client->status ],
+        ]);
+        
+        // Invalidar cache de storage após criar
+        $this->invalidateStorageCache();
 
         return redirect()->route('clients.index')->with('success', 'Cliente criado com sucesso!');
     }
@@ -169,7 +196,7 @@ class ClientController extends Controller
             'name' => 'required|string|max:255',
             'email' => 'nullable|email|max:255',
             'phone' => 'nullable|string|max:20',
-            'cpf_cnpj' => 'required|string|unique:clients,cpf_cnpj,' . $client->id,
+            'cpf_cnpj' => 'required|string|unique:clients,cpf_cnpj,' . $client->id . ',id,tenant_id,' . $client->tenant_id,
             'ie_rg' => 'nullable|string|max:50',
             'type' => 'required|in:pf,pj',
             'address' => 'nullable|string|max:255',
@@ -191,7 +218,20 @@ class ClientController extends Controller
         if (!empty($validated['zip_code'])) { $validated['zip_code'] = preg_replace('/\D+/', '', (string) $validated['zip_code']); }
         if (!empty($validated['codigo_ibge'])) { $validated['codigo_ibge'] = preg_replace('/\D+/', '', (string) $validated['codigo_ibge']); }
 
+        $before = $client->replicate();
         $client->update($validated);
+        $fields = ['name','email','phone','cpf_cnpj','type','status','address','number','complement','neighborhood','city','state','zip_code'];
+        $changes = [];
+        foreach ($fields as $f) { if ($before->$f != $client->$f) { $changes[$f] = ['old'=>$before->$f,'new'=>$client->$f]; } }
+        if (!empty($changes)) {
+            \App\Models\ClientAudit::create([
+                'tenant_id' => auth()->user()->tenant_id,
+                'user_id' => auth()->id(),
+                'client_id' => $client->id,
+                'action' => 'updated',
+                'changes' => $changes,
+            ]);
+        }
 
         return redirect()->route('clients.index')->with('success', 'Cliente atualizado com sucesso!');
     }
@@ -200,7 +240,15 @@ class ClientController extends Controller
     {
         abort_unless(auth()->user()->hasPermission('clients.delete'), 403);
         abort_unless(auth()->check() && $client->tenant_id === auth()->user()->tenant_id, 403);
+        $snap = ['name' => $client->name, 'cpf_cnpj' => $client->cpf_cnpj];
         $client->delete();
+        \App\Models\ClientAudit::create([
+            'tenant_id' => auth()->user()->tenant_id,
+            'user_id' => auth()->id(),
+            'client_id' => null,
+            'action' => 'deleted',
+            'changes' => $snap,
+        ]);
 
         return redirect()->route('clients.index')->with('success', 'Cliente excluído com sucesso!');
     }

@@ -22,9 +22,11 @@ use Illuminate\Support\Facades\URL;
 use Illuminate\Database\QueryException;
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception as PHPMailerException;
+use App\Traits\StorageLimitCheck;
 
 class ServiceOrderController extends Controller
 {
+    use StorageLimitCheck;
     public function index(Request $request)
     {
         abort_unless(auth()->user()->hasPermission('service_orders.view'), 403);
@@ -443,7 +445,7 @@ class ServiceOrderController extends Controller
             'to' => 'required|email|max:255',
             'subject' => 'required|string|max:255',
             'body' => 'nullable|string',
-            'template' => 'nullable|in:approval_request,ready_for_pickup',
+            'template' => 'nullable|in:approval_request,ready_for_pickup,cancellation',
         ], [
             'to.required' => 'O campo email é obrigatório.',
             'to.email' => 'Por favor, insira um email válido.',
@@ -484,6 +486,15 @@ class ServiceOrderController extends Controller
                 if (empty($subject)) {
                     $subject = 'OS #' . $serviceOrder->number . ' - Pronto para retirada';
                 }
+            } elseif ($data['template'] === 'cancellation') {
+                if ($serviceOrder->status !== 'canceled') {
+                    return back()->withErrors(['template' => 'O template de cancelamento só pode ser usado para OS canceladas.'])->withInput();
+                }
+                $serviceOrder->load(['cancellation', 'cancelledBy']);
+                $body = view('service_orders.emails._cancellation', compact('serviceOrder', 'client'))->render();
+                if (empty($subject)) {
+                    $subject = 'OS #' . $serviceOrder->number . ' - Cancelamento';
+                }
             }
         }
 
@@ -498,10 +509,34 @@ class ServiceOrderController extends Controller
         $password = $active->password ?? env('MAIL_PASSWORD');
         $encryption = $active->encryption ?? env('MAIL_ENCRYPTION', 'tls');
         $fromAddress = $active->from_address ?? env('MAIL_FROM_ADDRESS');
-        $fromName = $active->from_name ?? env('MAIL_FROM_NAME', 'QFiscal');
+        $tenant = $serviceOrder->tenant;
+        $fromName = (string)($tenant->fantasy_name ?? $tenant->name ?? $active->from_name ?? env('MAIL_FROM_NAME', 'QFiscal'));
 
         if (empty($host) || empty($fromAddress)) {
             return back()->withErrors(['email' => 'Configuração SMTP incompleta. Verifique host e email remetente.'])->withInput();
+        }
+
+        // Gerar PDF do cancelamento se template for cancellation
+        $pdfContent = null;
+        if ($data['template'] === 'cancellation' && $serviceOrder->status === 'canceled') {
+            try {
+                $serviceOrder->loadMissing(['client', 'cancellation', 'cancelledBy', 'items', 'tenant']);
+                $pdfHtml = view('service_orders.cancellation_receipt', compact('serviceOrder'))->render();
+                if (class_exists(\Barryvdh\DomPDF\Facade\Pdf::class)) {
+                    $pdf = \Barryvdh\DomPDF\Facade\Pdf::loadHTML($pdfHtml)->setPaper('a4');
+                    $pdfContent = $pdf->output();
+                } elseif (class_exists(\Barryvdh\DomPDF\Facades\Pdf::class)) {
+                    $pdf = \Barryvdh\DomPDF\Facades\Pdf::loadHTML($pdfHtml)->setPaper('a4');
+                    $pdfContent = $pdf->output();
+                } else {
+                    \Log::warning('Biblioteca PDF não encontrada para gerar cancelamento');
+                }
+            } catch (\Throwable $pdfError) {
+                \Log::warning('Erro ao gerar PDF de cancelamento', [
+                    'service_order_id' => $serviceOrder->id,
+                    'error' => $pdfError->getMessage()
+                ]);
+            }
         }
 
         try {
@@ -513,7 +548,35 @@ class ServiceOrderController extends Controller
             $mailer->Body = $body;
             $mailer->AltBody = strip_tags($body);
             
+            // Anexar PDF se foi gerado com sucesso
+            if ($pdfContent) {
+                $mailer->addStringAttachment($pdfContent, 'Cancelamento_OS_' . $serviceOrder->number . '.pdf', 'base64', 'application/pdf');
+            }
+            
             $mailer->send();
+            
+            // Registrar auditoria de envio de email
+            try {
+                \App\Models\ServiceOrderAudit::create([
+                    'service_order_id' => $serviceOrder->id,
+                    'user_id' => auth()->id(),
+                    'action' => 'email_sent',
+                    'notes' => 'Email enviado para ' . $data['to'],
+                    'changes' => [
+                        'to' => $data['to'],
+                        'subject' => $subject,
+                        'template' => $data['template'] ?? 'custom',
+                        'has_pdf' => !empty($pdfContent),
+                    ],
+                ]);
+            } catch (\Throwable $auditError) {
+                \Log::warning('Erro ao registrar auditoria de email', [
+                    'service_order_id' => $serviceOrder->id,
+                    'error' => $auditError->getMessage()
+                ]);
+            }
+            
+            return redirect()->route('service_orders.show', $serviceOrder)->with('success', 'E-mail enviado com sucesso para ' . $data['to'] . '!');
         } catch (PHPMailerException $e) {
             // Fallback automático: troca porta/cripto e tenta novamente
             if (stripos($e->getMessage(), 'Could not connect to SMTP host') !== false || stripos($e->getMessage(), 'Failed to connect') !== false) {
@@ -528,7 +591,35 @@ class ServiceOrderController extends Controller
                     $mailer->Body = $body;
                     $mailer->AltBody = strip_tags($body);
                     
+                    // Anexar PDF se foi gerado com sucesso
+                    if ($pdfContent) {
+                        $mailer->addStringAttachment($pdfContent, 'Cancelamento_OS_' . $serviceOrder->number . '.pdf', 'base64', 'application/pdf');
+                    }
+                    
                     $mailer->send();
+                    
+                    // Registrar auditoria de envio de email (fallback)
+                    try {
+                        \App\Models\ServiceOrderAudit::create([
+                            'service_order_id' => $serviceOrder->id,
+                            'user_id' => auth()->id(),
+                            'action' => 'email_sent',
+                            'notes' => 'Email enviado para ' . $data['to'] . ' (fallback)',
+                            'changes' => [
+                                'to' => $data['to'],
+                                'subject' => $subject,
+                                'template' => $data['template'] ?? 'custom',
+                                'has_pdf' => !empty($pdfContent),
+                            ],
+                        ]);
+                    } catch (\Throwable $auditError) {
+                        \Log::warning('Erro ao registrar auditoria de email', [
+                            'service_order_id' => $serviceOrder->id,
+                            'error' => $auditError->getMessage()
+                        ]);
+                    }
+                    
+                    return redirect()->route('service_orders.show', $serviceOrder)->with('success', 'E-mail enviado com sucesso para ' . $data['to'] . '!');
                 } catch (PHPMailerException $e2) {
                     $meta = " host={$host} port={$altPort} enc={$altEnc} user={$username} from={$fromAddress}";
                     $full = 'Falha ao enviar: ' . $e->getMessage() . ' | Tentativa alternativa: ' . $e2->getMessage() . $meta;
@@ -540,8 +631,6 @@ class ServiceOrderController extends Controller
                 return back()->withErrors(['email' => $full])->withInput();
             }
         }
-        
-        return redirect()->route('service_orders.show', $serviceOrder)->with('success', 'E-mail enviado com sucesso para ' . $data['to'] . '!');
     }
 
     public function approve(ServiceOrder $serviceOrder, Request $request)
@@ -1313,6 +1402,14 @@ class ServiceOrderController extends Controller
         ]);
 
         $file = $request->file('file');
+        $fileSize = $file->getSize();
+        
+        // Verificar limite de storage de arquivos ANTES de fazer upload
+        if (!$this->checkStorageLimit('files', $fileSize)) {
+            return back()->withErrors([
+                'file' => $this->getStorageLimitErrorMessage('files')
+            ]);
+        }
         
         // Limitar a 10 fotos (imagens) por OS
         if (str_starts_with((string)$file->getMimeType(), 'image/')) {
@@ -1335,6 +1432,9 @@ class ServiceOrderController extends Controller
             'mime_type' => $file->getClientMimeType(),
             'size' => $file->getSize(),
         ]);
+        
+        // Invalidar cache de storage após upload
+        $this->invalidateStorageCache();
 
         return back()->with('success', 'Anexo adicionado.');
     }

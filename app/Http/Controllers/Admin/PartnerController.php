@@ -14,6 +14,7 @@ use App\Models\SmtpConfig;
 use App\Http\Controllers\Admin\EmailTestController;
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception as PHPMailerException;
+use Illuminate\Database\QueryException;
 
 class PartnerController extends Controller
 {
@@ -112,6 +113,20 @@ class PartnerController extends Controller
 		// normalizar CNPJ/telefone
 		if (!empty($data['cnpj'])) { $data['cnpj'] = preg_replace('/[^0-9]/','',$data['cnpj']); }
 		if (!empty($data['contact_phone'])) { $data['contact_phone'] = preg_replace('/[^0-9]/','',$data['contact_phone']); }
+		
+		// Verificar se o email já existe em outro parceiro (exceto o atual)
+		if (!empty($data['contact_email'])) {
+			$existingPartner = Partner::where('contact_email', $data['contact_email'])
+				->where('id', '!=', $partner->id)
+				->first();
+			
+			if ($existingPartner) {
+				return redirect()->route('admin.partners.edit', $partner)
+					->with('error', 'O e-mail informado já está cadastrado para outro parceiro. Por favor, use outro e-mail.')
+					->withInput();
+			}
+		}
+		
 		// upload logo
 		if ($request->hasFile('logo')) {
 			$path = $request->file('logo')->store('partners/logos','public');
@@ -119,36 +134,90 @@ class PartnerController extends Controller
 		}
 		$partner->update($data);
         // Se acabou de ativar, enviar convite se não houver usuário de parceiro
-        if ($partner->active && !User::where('partner_id',$partner->id)->exists()) {
-            $token = Str::random(40);
-            $user = User::create([
-                'name' => $partner->contact_name ?: $partner->name,
-                'email' => $partner->contact_email,
-                'password' => bcrypt(Str::random(12)),
-                'partner_id' => $partner->id,
-                'invite_token' => $token,
-            ]);
-            // E-mail de convite com link para setar senha
-            $active = SmtpConfig::where('is_active', true)->first();
-            $host = (string) ($active->host ?? env('MAIL_HOST', '127.0.0.1'));
-            $port = (int) ($active->port ?? (int) env('MAIL_PORT', 2525));
-            $username = (string) ($active->username ?? env('MAIL_USERNAME'));
-            $password = (string) ($active->password ?? env('MAIL_PASSWORD'));
-            $encryption = strtolower((string) ($active->encryption ?? (env('MAIL_ENCRYPTION') ?: 'tls')));
-            $fromAddress = (string) ($active->from_address ?? env('MAIL_FROM_ADDRESS'));
-            $fromName = (string) ($active->from_name ?? (env('MAIL_FROM_NAME') ?: config('app.name')));
-            $inviteUrl = route('partner.set_password', ['token' => $token]);
-            $html = view('emails.partners.invite', compact('partner','inviteUrl'))->render();
-            try {
-                $mailer = new PHPMailer(true);
-                EmailTestController::configureMailer($mailer, $host, $port, $username, $password, $encryption, $fromAddress, $fromName);
-                $mailer->addAddress($partner->contact_email, $partner->contact_name ?: $partner->name);
-                $mailer->isHTML(true);
-                $mailer->Subject = 'Acesso ao Painel do Parceiro - QFiscal';
-                $mailer->Body = $html;
-                $mailer->AltBody = strip_tags($html);
-                $mailer->send();
-            } catch (PHPMailerException $e) {}
+        if ($partner->active) {
+            // Verificar se já existe um usuário para este parceiro
+            $existingPartnerUser = PartnerUser::where('partner_id', $partner->id)->first();
+            
+            // Se não existe usuário para o parceiro e tem email, tentar criar
+            if (!$existingPartnerUser && $partner->contact_email) {
+                // Verificar se já existe um usuário com esse email que pertence a este parceiro
+                $userWithEmailForThisPartner = PartnerUser::where('email', $partner->contact_email)
+                    ->where('partner_id', $partner->id)
+                    ->first();
+                
+                // Se não existe usuário com esse email para este parceiro, criar
+                if (!$userWithEmailForThisPartner) {
+                    // Verificar se o email já existe em outro usuário de outro parceiro
+                    $existingEmailUser = PartnerUser::where('email', $partner->contact_email)
+                        ->where('partner_id', '!=', $partner->id)
+                        ->first();
+                    
+                    if ($existingEmailUser) {
+                        return redirect()->route('admin.partners.edit', $partner)
+                            ->with('error', 'O e-mail informado já está cadastrado no sistema. Por favor, use outro e-mail.')
+                            ->withInput();
+                    }
+                    
+                    // Criar usuário
+                    $token = Str::random(40);
+                    try {
+                        $user = PartnerUser::create([
+                            'name' => $partner->contact_name ?: $partner->name,
+                            'email' => $partner->contact_email,
+                            'password' => bcrypt(Str::random(12)),
+                            'partner_id' => $partner->id,
+                            'invite_token' => $token,
+                        ]);
+                        
+                        // E-mail de convite com link para setar senha
+                        $active = SmtpConfig::where('is_active', true)->first();
+                        $host = (string) ($active->host ?? env('MAIL_HOST', '127.0.0.1'));
+                        $port = (int) ($active->port ?? (int) env('MAIL_PORT', 2525));
+                        $username = (string) ($active->username ?? env('MAIL_USERNAME'));
+                        $password = (string) ($active->password ?? env('MAIL_PASSWORD'));
+                        $encryption = strtolower((string) ($active->encryption ?? (env('MAIL_ENCRYPTION') ?: 'tls')));
+                        $fromAddress = (string) ($active->from_address ?? env('MAIL_FROM_ADDRESS'));
+                        $fromName = (string) ($active->from_name ?? (env('MAIL_FROM_NAME') ?: config('app.name')));
+                        $inviteUrl = route('partner.set_password', ['token' => $token]);
+                        $html = view('emails.partners.invite', compact('partner','inviteUrl'))->render();
+                        try {
+                            $mailer = new PHPMailer(true);
+                            EmailTestController::configureMailer($mailer, $host, $port, $username, $password, $encryption, $fromAddress, $fromName);
+                            $mailer->addAddress($partner->contact_email, $partner->contact_name ?: $partner->name);
+                            $mailer->isHTML(true);
+                            $mailer->Subject = 'Acesso ao Painel do Parceiro - QFiscal';
+                            $mailer->Body = $html;
+                            $mailer->AltBody = strip_tags($html);
+                            $mailer->send();
+                        } catch (PHPMailerException $e) {}
+                    } catch (QueryException $e) {
+                        // Tratar erro de email duplicado
+                        if ($e->getCode() == 23000) {
+                            $errorCode = $e->errorInfo[1] ?? null;
+                            if ($errorCode == 1062) {
+                                // Verificar se o email já pertence ao próprio usuário deste parceiro
+                                $partnerUser = PartnerUser::where('partner_id', $partner->id)
+                                    ->where('email', $partner->contact_email)
+                                    ->first();
+                                
+                                if (!$partnerUser) {
+                                    return redirect()->route('admin.partners.edit', $partner)
+                                        ->with('error', 'O e-mail informado já está cadastrado no sistema. Por favor, use outro e-mail.')
+                                        ->withInput();
+                                }
+                            } else {
+                                return redirect()->route('admin.partners.edit', $partner)
+                                    ->with('error', 'Ocorreu um erro ao salvar. Por favor, tente novamente.')
+                                    ->withInput();
+                            }
+                        } else {
+                            return redirect()->route('admin.partners.edit', $partner)
+                                ->with('error', 'Ocorreu um erro ao salvar. Por favor, tente novamente.')
+                                ->withInput();
+                        }
+                    }
+                }
+            }
         }
         return redirect()->route('admin.partners.index')->with('success','Parceiro atualizado. Convite enviado se aplicável.');
     }

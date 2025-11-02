@@ -213,6 +213,7 @@
                                 <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NCM</th>
                                 <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">CFOP</th>
                                 <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
+                                <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Auditoria</th>
                                 <th scope="col" class="relative px-3 py-2"><span class="sr-only">Ações</span></th>
                             </tr>
                         </thead>
@@ -246,6 +247,28 @@
                                         </span>
                                     @endif
                                 </td>
+                                <td class="px-3 py-2 whitespace-nowrap text-xs text-gray-600">
+                                    <div class="space-y-1">
+                                        @if($r->createdBy)
+                                            <div class="flex items-center gap-1">
+                                                <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
+                                                </svg>
+                                                <span class="text-gray-500">Criado por:</span>
+                                                <span class="font-medium">{{ $r->createdBy->name }}</span>
+                                            </div>
+                                        @endif
+                                        @if($r->updatedBy && $r->updatedBy->id !== ($r->createdBy->id ?? null))
+                                            <div class="flex items-center gap-1">
+                                                <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
+                                                </svg>
+                                                <span class="text-gray-500">Editado por:</span>
+                                                <span class="font-medium">{{ $r->updatedBy->name }}</span>
+                                            </div>
+                                        @endif
+                                    </div>
+                                </td>
                                 <td class="px-3 py-2 whitespace-nowrap text-right text-xs font-medium">
                                     <div class="flex items-center justify-end space-x-1">
                                         @if(method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('tax_rates.view'))
@@ -278,7 +301,7 @@
                             </tr>
                             @empty
                             <tr>
-                                <td colspan="6" class="px-3 py-8 text-center">
+                                <td colspan="7" class="px-3 py-8 text-center">
                                     <div class="flex flex-col items-center">
                                         <svg class="w-8 h-8 text-gray-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>

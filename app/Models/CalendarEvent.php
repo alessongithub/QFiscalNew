@@ -12,6 +12,15 @@ class CalendarEvent extends Model
     protected $fillable = [
         'tenant_id', 'title', 'start_date', 'start_time', 'end_time', 'notes'
     ];
+
+    protected $casts = [
+        'start_date' => 'date',
+    ];
+
+    public function tenant()
+    {
+        return $this->belongsTo(Tenant::class);
+    }
 }
 
 

@@ -55,7 +55,7 @@
                             </label>
                             <select name="status" class="w-full border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
                                 <option value="">Todos os status</option>
-                    @foreach(['open'=>'Aberto','fulfilled'=>'Finalizado','canceled'=>'Cancelado'] as $k=>$v)
+                    @foreach(['open'=>'Aberto','fulfilled'=>'Finalizado','canceled'=>'Cancelado','partial_returned'=>'Devolução parcial'] as $k=>$v)
                         <option value="{{ $k }}" @selected(request('status')===$k)>{{ $v }}</option>
                     @endforeach
                 </select>
@@ -196,6 +196,11 @@
                                                     <i class="fas fa-times mr-1"></i>Cancelado
                                                 </span>
                                                 @break
+                                            @case('partial_returned')
+                                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                                    <i class="fas fa-undo mr-1"></i>Devolução parcial
+                                                </span>
+                                                @break
                                             @default
                                                 <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
                         {{ $map[$o->status] ?? $o->status }}
@@ -217,11 +222,25 @@
                             @endif
                                             
                             @if(auth()->user()->hasPermission('orders.view'))
-                                                <a href="{{ route('orders.email_form', $o) }}" title="E-mail" class="inline-flex items-center justify-center w-7 h-7 rounded-md text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition duration-150 ease-in-out">
+                                @php 
+                                    $isPartialReturned = ($o->status === 'partial_returned');
+                                    $isCanceled = ($o->status === 'canceled');
+                                @endphp
+                                @if($isPartialReturned)
+                                    <span title="Pedido com devolução parcial precisa ser reaberto para enviar email" class="inline-flex items-center justify-center w-7 h-7 rounded-md text-sm font-medium text-indigo-400 bg-indigo-50 opacity-50 cursor-not-allowed">
+                                @elseif($isCanceled)
+                                    <a href="{{ route('orders.email_form', $o) }}" title="E-mail - Pedido cancelado" class="inline-flex items-center justify-center w-7 h-7 rounded-md text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition duration-150 ease-in-out">
+                                @else
+                                    <a href="{{ route('orders.email_form', $o) }}" title="E-mail" class="inline-flex items-center justify-center w-7 h-7 rounded-md text-sm font-medium text-indigo-700 bg-indigo-50 hover:bg-indigo-100 transition duration-150 ease-in-out">
+                                @endif
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8m-18 8h18a2 2 0 002-2V8a2 2 0 00-2-2H3a2 2 0 00-2 2v6a2 2 0 002 2z" />
                                 </svg>
-                            </a>
+                                @if($isPartialReturned)
+                                    </span>
+                                @else
+                                    </a>
+                                @endif
                             @endif
                                             
                             @php $missingCpf = empty(optional($o->client)->cpf_cnpj); @endphp

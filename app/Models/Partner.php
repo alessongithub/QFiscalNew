@@ -15,6 +15,11 @@ class Partner extends Model
         'commission_percent','theme','primary_color','secondary_color','logo_path','active',
         'mp_user_id','mp_public_key','mp_access_token','mp_refresh_token','mp_connected_at',
     ];
+
+    public function tenants()
+    {
+        return $this->hasMany(Tenant::class);
+    }
 }
 
 

@@ -6,21 +6,39 @@ use App\Models\Plan;
 use App\Models\Tenant;
 use App\Models\User;
 use App\Models\Role;
+use App\Models\SmtpConfig;
+use App\Http\Controllers\Admin\EmailTestController;
+use PHPMailer\PHPMailer\PHPMailer;
+use PHPMailer\PHPMailer\Exception as PHPMailerException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Session;
 use Illuminate\Support\Str;
-use Illuminate\Support\Facades\Mail;
 
 class TenantController extends Controller
 {
     // Primeira etapa - dados básicos do usuário
     public function create()
     {
+        // Verificar se há token de convite do parceiro
+        $partnerToken = request()->get('token');
+        $partnerInvite = null;
+        
+        if ($partnerToken) {
+            $partnerInvite = \Illuminate\Support\Facades\Cache::get("partner_invite_{$partnerToken}");
+        }
+        
         // Capturar plano selecionado da landing page
         $planoSelecionado = request()->get('plano', 'gratuito');
-        return view('tenants.register-step1', compact('planoSelecionado'));
+        
+        // Se houver invite do parceiro, armazenar na sessão
+        if ($partnerInvite) {
+            \Illuminate\Support\Facades\Session::put('partner_invite_token', $partnerToken);
+            \Illuminate\Support\Facades\Session::put('partner_invite_data', $partnerInvite);
+        }
+        
+        return view('tenants.register-step1', compact('planoSelecionado', 'partnerInvite'));
     }
 
     public function storeStep1(Request $request)
@@ -123,8 +141,28 @@ class TenantController extends Controller
 
             $plan = Plan::where('slug', $planSlug)->where('active', true)->firstOrFail();
 
+            // Verificar se há convite do parceiro na sessão
+            $partnerToken = Session::get('partner_invite_token');
+            $partnerInvite = null;
+            $partnerId = null;
+            
+            if ($partnerToken) {
+                $partnerInvite = \Illuminate\Support\Facades\Cache::get("partner_invite_{$partnerToken}");
+                if ($partnerInvite && isset($partnerInvite['partner_id'])) {
+                    $partnerId = $partnerInvite['partner_id'];
+                }
+                // Limpar o token após uso
+                \Illuminate\Support\Facades\Cache::forget("partner_invite_{$partnerToken}");
+                Session::forget('partner_invite_token');
+                Session::forget('partner_invite_data');
+            }
+            
+            // Se não tem partner_id do convite, tentar detectar pelo contexto
+            if (!$partnerId) {
+                $partnerId = app()->bound('partner') ? optional(app('partner'))->id : null;
+            }
+            
             // Criar o tenant
-            $partnerId = app()->bound('partner') ? optional(app('partner'))->id : null;
             $tenant = Tenant::create([
                 'name' => $request->name,
                 'fantasy_name' => $request->fantasy_name,
@@ -199,19 +237,42 @@ class TenantController extends Controller
             // Salvar token na sessão temporariamente (em produção, salvaria no banco)
             Session::put('activation_token_' . $user->id, $token);
             
+            // Buscar configuração SMTP ativa
+            $active = SmtpConfig::where('is_active', true)->first();
+            if (!$active) {
+                \Log::error('Configuração SMTP não encontrada para envio de email de ativação');
+                return;
+            }
+            
+            $host = (string) ($active->host ?? env('MAIL_HOST', '127.0.0.1'));
+            $port = (int) ($active->port ?? (int) env('MAIL_PORT', 2525));
+            $username = (string) ($active->username ?? env('MAIL_USERNAME'));
+            $password = (string) ($active->password ?? env('MAIL_PASSWORD'));
+            $encryption = strtolower((string) ($active->encryption ?? (env('MAIL_ENCRYPTION') ?: 'tls')));
+            $fromAddress = (string) ($active->from_address ?? env('MAIL_FROM_ADDRESS'));
+            $fromName = (string) ($active->from_name ?? (env('MAIL_FROM_NAME') ?: config('app.name')));
+            
             $data = [
                 'user' => $user,
                 'tenant' => $tenant,
                 'activation_url' => url('/activate/' . $user->id . '/' . $token),
                 'login_url' => url('/login')
             ];
-
-            Mail::send('emails.account-activation', $data, function($message) use ($user) {
-                $message->to($user->email, $user->name)
-                        ->subject('Ative sua conta - QFiscal');
-            });
+            
+            $html = view('emails.account-activation', $data)->render();
+            
+            $mailer = new PHPMailer(true);
+            EmailTestController::configureMailer($mailer, $host, $port, $username, $password, $encryption, $fromAddress, $fromName);
+            $mailer->addAddress($user->email, $user->name);
+            $mailer->isHTML(true);
+            $mailer->Subject = 'Ative sua conta - QFiscal';
+            $mailer->Body = $html;
+            $mailer->AltBody = strip_tags($html);
+            $mailer->send();
 
             \Log::info('Email de ativação enviado para: ' . $user->email);
+        } catch (PHPMailerException $e) {
+            \Log::error('Erro ao enviar email de ativação: ' . $e->getMessage());
         } catch (\Exception $e) {
             \Log::error('Erro ao enviar email de ativação: ' . $e->getMessage());
         }

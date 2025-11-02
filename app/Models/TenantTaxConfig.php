@@ -17,6 +17,7 @@ class TenantTaxConfig extends Model
         'aliquota_simples_nacional',
         'habilitar_ibpt',
         'codigo_ibpt_padrao',
+        'updated_by',
     ];
 
     protected $casts = [
@@ -27,6 +28,11 @@ class TenantTaxConfig extends Model
     public function tenant()
     {
         return $this->belongsTo(Tenant::class);
+    }
+
+    public function updatedBy()
+    {
+        return $this->belongsTo(User::class, 'updated_by');
     }
 }
 

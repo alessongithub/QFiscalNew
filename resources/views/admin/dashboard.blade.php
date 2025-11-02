@@ -151,6 +151,24 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- Card Armazenamento -->
+                <div class="bg-white p-6 rounded-lg shadow">
+                    <div class="flex items-center">
+                        <div class="p-3 rounded-full bg-orange-500 bg-opacity-10">
+                            <svg class="h-8 w-8 text-orange-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4"/>
+                            </svg>
+                        </div>
+                        <div class="ml-4">
+                            <h2 class="text-gray-600 text-sm">Armazenamento</h2>
+                            <p class="text-sm text-gray-500">Consumo por tenant e estatísticas gerais</p>
+                            <div class="mt-2">
+                                <a href="{{ route('admin.storage-usage') }}" class="inline-flex items-center px-3 py-2 bg-orange-600 text-white rounded hover:bg-orange-700">Ver Relatório</a>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

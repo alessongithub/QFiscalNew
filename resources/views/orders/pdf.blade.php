@@ -280,7 +280,16 @@
             @if($order->freight_payer)
             <div class="info-row">
                 <div class="info-label">Pagador:</div>
-                <div class="info-value">{{ $order->freight_payer }}</div>
+                <div class="info-value">
+                    @switch($order->freight_payer)
+                        @case('company') Empresa @break
+                        @case('buyer') Destinatário @break
+                        @case('sender') Remetente @break
+                        @case('receiver') Destinatário @break
+                        @case('third') Terceiros @break
+                        @default {{ ucfirst($order->freight_payer) }} @break
+                    @endswitch
+                </div>
             </div>
             @endif
         </div>

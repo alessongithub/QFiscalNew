@@ -11,16 +11,16 @@
             </div>
             <div>
                 <label class="block text-sm text-gray-600">Texto</label>
-                <textarea name="body" rows="5" class="w-full border rounded px-3 py-2">{{ old('body', $news->body) }}</textarea>
+                <textarea name="body" rows="5" class="w-full border rounded px-3 py-2">{{ old('body', $news->body ?? $news->content ?? '') }}</textarea>
             </div>
             <div class="grid md:grid-cols-2 gap-3">
                 <div>
                     <label class="block text-sm text-gray-600">Imagem (URL)</label>
-                    <input name="image_url" value="{{ old('image_url', $news->image_url) }}" class="w-full border rounded px-3 py-2" />
+                    <input name="image_url" value="{{ old('image_url', $news->image_url ?? '') }}" class="w-full border rounded px-3 py-2" />
                 </div>
                 <div>
                     <label class="block text-sm text-gray-600">Link (URL)</label>
-                    <input name="link_url" value="{{ old('link_url', $news->link_url) }}" class="w-full border rounded px-3 py-2" />
+                    <input name="link_url" value="{{ old('link_url', $news->link_url ?? '') }}" class="w-full border rounded px-3 py-2" />
                 </div>
             </div>
             <div>

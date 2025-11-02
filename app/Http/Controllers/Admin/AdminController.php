@@ -11,9 +11,12 @@ use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Partner;
 use App\Models\Setting;
+use App\Models\TenantStorageUsage;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Artisan;
+use App\Services\StorageCalculator;
 
 class AdminController extends Controller
 {
@@ -149,10 +152,74 @@ class AdminController extends Controller
         return redirect()->route('admin.smtp-settings')->with('success', 'Configurações SMTP atualizadas com sucesso.');
     }
 
-    public function tenants()
+    public function tenants(Request $request)
     {
-        $tenants = Tenant::with('users')->paginate(10);
-        return view('admin.tenants', compact('tenants'));
+        $query = Tenant::with(['users', 'partner', 'plan']);
+        
+        // Filtro por busca (nome, fantasia, email, CNPJ)
+        if ($search = $request->get('search')) {
+            $query->where(function($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                  ->orWhere('fantasy_name', 'like', "%{$search}%")
+                  ->orWhere('email', 'like', "%{$search}%")
+                  ->orWhere('cnpj', 'like', "%" . preg_replace('/[^0-9]/', '', $search) . "%");
+            });
+        }
+        
+        // Filtro por parceiro
+        if ($partnerId = $request->get('partner_id')) {
+            if ($partnerId === 'none') {
+                $query->whereNull('partner_id');
+            } else {
+                $query->where('partner_id', $partnerId);
+            }
+        }
+        
+        // Filtro por plano
+        if ($planId = $request->get('plan_id')) {
+            if ($planId === 'none') {
+                $query->whereNull('plan_id');
+            } else {
+                $query->where('plan_id', $planId);
+            }
+        }
+        
+        // Filtro por assinaturas vencidas
+        if ($request->boolean('expired')) {
+            $query->whereNotNull('plan_expires_at')
+                  ->whereDate('plan_expires_at', '<', now()->toDateString());
+        }
+        
+        // Ordenação
+        $query->orderBy('name');
+        
+        // Paginação
+        $perPage = $request->get('per_page', 10);
+        $perPage = in_array($perPage, [10, 25, 50, 100]) ? $perPage : 10;
+        
+        $tenants = $query->paginate($perPage)->withQueryString();
+        
+        // Dados para os filtros
+        $partners = \App\Models\Partner::orderBy('name')->get();
+        $plans = \App\Models\Plan::where('active', true)->orderBy('price')->get();
+        
+        return view('admin.tenants', compact('tenants', 'partners', 'plans'));
+    }
+
+    public function editTenant(Tenant $tenant)
+    {
+        $partners = \App\Models\Partner::where('active', true)->orderBy('name')->get();
+        return view('admin.tenants.edit', compact('tenant', 'partners'));
+    }
+
+    public function updateTenant(Request $request, Tenant $tenant)
+    {
+        $data = $request->validate([
+            'partner_id' => ['nullable', 'exists:partners,id'],
+        ]);
+
+        $tenant->update($data);
+        return redirect()->route('admin.tenants')->with('success', 'Tenant atualizado com sucesso.');
     }
 
     public function toggleTenantStatus(Tenant $tenant)
@@ -302,26 +369,47 @@ class AdminController extends Controller
             'description' => 'nullable|string',
             'price' => 'required|numeric|min:0',
             'active' => 'boolean',
-            // Campos dinâmicos de features
+            // Limites de recursos
             'max_clients' => 'nullable|integer',
             'max_users' => 'nullable|integer',
+            'max_products' => 'nullable|integer',
+            // Features de acesso
             'has_api_access' => 'nullable|boolean',
             'has_emissor' => 'nullable|boolean',
             'has_erp' => 'nullable|boolean',
+            'allow_issue_nfe' => 'nullable|boolean',
+            'allow_pos' => 'nullable|boolean',
+            'erp_access_level' => 'nullable|in:free,basic,professional,enterprise',
             'support_type' => 'nullable|in:email,priority,24/7',
+            // Limites de armazenamento
+            'storage_data_mb' => 'nullable|integer|min:-1',
+            'storage_files_mb' => 'nullable|integer|min:-1',
+            'additional_data_price' => 'nullable|numeric|min:0',
+            'additional_files_price' => 'nullable|numeric|min:0',
+            // Display
             'display_features_text' => 'nullable|string',
-            'max_products' => 'nullable|integer',
         ]);
 
         // Montar objeto de features
         $features = [
+            // Limites de recursos
             'max_clients' => $request->input('max_clients', 50),
             'max_users' => $request->input('max_users', 1),
             'max_products' => $request->input('max_products', null),
+            // Features de acesso
             'has_api_access' => (bool) $request->input('has_api_access', false),
             'has_emissor' => (bool) $request->input('has_emissor', false),
             'has_erp' => (bool) $request->input('has_erp', true),
+            'allow_issue_nfe' => (bool) $request->input('allow_issue_nfe', false),
+            'allow_pos' => (bool) $request->input('allow_pos', false),
+            'erp_access_level' => $request->input('erp_access_level'),
             'support_type' => $request->input('support_type', 'email'),
+            // Limites de armazenamento
+            'storage_data_mb' => $request->input('storage_data_mb', 50),
+            'storage_files_mb' => $request->input('storage_files_mb', 500),
+            'additional_data_price' => $request->input('additional_data_price', 9.90),
+            'additional_files_price' => $request->input('additional_files_price', 9.90),
+            // Display
             'display_features' => []
         ];
 
@@ -358,28 +446,49 @@ class AdminController extends Controller
             'description' => 'nullable|string',
             'price' => 'required|numeric|min:0',
             'active' => 'boolean',
-            // Campos dinâmicos de features
+            // Limites de recursos
             'max_clients' => 'nullable|integer',
             'max_users' => 'nullable|integer',
+            'max_products' => 'nullable|integer',
+            // Features de acesso
             'has_api_access' => 'nullable|boolean',
             'has_emissor' => 'nullable|boolean',
             'has_erp' => 'nullable|boolean',
+            'allow_issue_nfe' => 'nullable|boolean',
+            'allow_pos' => 'nullable|boolean',
+            'erp_access_level' => 'nullable|in:free,basic,professional,enterprise',
             'support_type' => 'nullable|in:email,priority,24/7',
+            // Limites de armazenamento
+            'storage_data_mb' => 'nullable|integer|min:-1',
+            'storage_files_mb' => 'nullable|integer|min:-1',
+            'additional_data_price' => 'nullable|numeric|min:0',
+            'additional_files_price' => 'nullable|numeric|min:0',
+            // Display
             'display_features_text' => 'nullable|string',
-            'max_products' => 'nullable|integer',
         ]);
 
         // Features existentes (compatibilidade com formatos antigos)
         $existing = is_array($plan->features) ? $plan->features : (json_decode($plan->features, true) ?? []);
 
         $features = [
+            // Limites de recursos
             'max_clients' => $request->input('max_clients', $existing['max_clients'] ?? 50),
             'max_users' => $request->input('max_users', $existing['max_users'] ?? 1),
             'max_products' => $request->input('max_products', $existing['max_products'] ?? null),
+            // Features de acesso
             'has_api_access' => (bool) $request->input('has_api_access', $existing['has_api_access'] ?? false),
             'has_emissor' => (bool) $request->input('has_emissor', $existing['has_emissor'] ?? false),
             'has_erp' => (bool) $request->input('has_erp', $existing['has_erp'] ?? true),
+            'allow_issue_nfe' => (bool) $request->input('allow_issue_nfe', $existing['allow_issue_nfe'] ?? false),
+            'allow_pos' => (bool) $request->input('allow_pos', $existing['allow_pos'] ?? false),
+            'erp_access_level' => $request->input('erp_access_level', $existing['erp_access_level'] ?? null),
             'support_type' => $request->input('support_type', $existing['support_type'] ?? 'email'),
+            // Limites de armazenamento
+            'storage_data_mb' => $request->input('storage_data_mb', $existing['storage_data_mb'] ?? 50),
+            'storage_files_mb' => $request->input('storage_files_mb', $existing['storage_files_mb'] ?? 500),
+            'additional_data_price' => $request->input('additional_data_price', $existing['additional_data_price'] ?? 9.90),
+            'additional_files_price' => $request->input('additional_files_price', $existing['additional_files_price'] ?? 9.90),
+            // Display
             'display_features' => $existing['display_features'] ?? []
         ];
 
@@ -428,5 +537,59 @@ class AdminController extends Controller
         Setting::setGlobal('services.delphi.token', $validated['token'] ?? '');
 
         return redirect()->route('admin.delphi-config')->with('success', 'Configurações do emissor Delphi atualizadas com sucesso.');
+    }
+
+    public function storageUsage(Request $request)
+    {
+        // Atualizar manualmente se solicitado
+        if ($request->has('update') && $request->input('update') === '1') {
+            try {
+                // Executar em background para não travar a página
+                Artisan::call('storage:update-usage');
+                return redirect()->route('admin.storage-usage')->with('success', 'Uso de armazenamento atualizado com sucesso!');
+            } catch (\Exception $e) {
+                return redirect()->route('admin.storage-usage')->with('error', 'Erro ao atualizar: ' . $e->getMessage());
+            }
+        }
+        
+        $query = Tenant::with(['plan', 'storageUsage', 'partner'])
+            ->where('active', true);
+        
+        // Filtros
+        if ($request->filled('search')) {
+            $search = $request->search;
+            $query->where(function($q) use ($search) {
+                $q->where('name', 'like', "%{$search}%")
+                  ->orWhere('fantasy_name', 'like', "%{$search}%")
+                  ->orWhere('email', 'like', "%{$search}%")
+                  ->orWhere('cnpj', 'like', "%".preg_replace('/[^0-9]/','',$search)."%");
+            });
+        }
+        
+        if ($request->filled('partner_id')) {
+            $query->where('partner_id', $request->partner_id);
+        }
+        
+        $tenants = $query->orderBy('name')->paginate(25);
+        $partners = Partner::orderBy('name')->get();
+        
+        // Calcular estatísticas gerais (otimizado - sem recalcular tudo)
+        $allUsage = TenantStorageUsage::selectRaw('
+            SUM(data_size_bytes) as total_data_bytes,
+            SUM(files_size_bytes) as total_files_bytes,
+            SUM(additional_data_mb) as total_additional_data_mb,
+            SUM(additional_files_mb) as total_additional_files_mb
+        ')->first();
+        
+        $stats = [
+            'total_data_gb' => round(($allUsage->total_data_bytes ?? 0) / 1024 / 1024 / 1024, 2),
+            'total_files_gb' => round(($allUsage->total_files_bytes ?? 0) / 1024 / 1024 / 1024, 2),
+            'total_additional_data_mb' => $allUsage->total_additional_data_mb ?? 0,
+            'total_additional_files_mb' => $allUsage->total_additional_files_mb ?? 0,
+            'tenants_with_storage' => TenantStorageUsage::count(),
+            'tenants_active' => Tenant::where('active', true)->count(),
+        ];
+        
+        return view('admin.storage-usage', compact('tenants', 'partners', 'stats'));
     }
 }

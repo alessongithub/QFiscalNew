@@ -716,14 +716,55 @@
                         <!-- Histórico de Mudanças de Status -->
                         @if($serviceOrder->statusLogs->count() > 0)
                         <div class="mt-6">
-                            <h4 class="text-md font-semibold text-gray-800 mb-4">Histórico de Mudanças de Status</h4>
-                            <div class="space-y-3">
+                            <div class="flex items-center justify-between mb-4">
+                                <h4 class="text-md font-semibold text-gray-800">Histórico de Mudanças de Status</h4>
+                                <div class="flex items-center gap-2">
+                                    <label class="text-xs text-gray-600">Filtrar:</label>
+                                    <select id="status-filter" class="text-sm border border-gray-300 rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                        <option value="">Todos</option>
+                                        <option value="open">Em análise</option>
+                                        <option value="in_progress">Orçada</option>
+                                        <option value="in_service">Em andamento</option>
+                                        <option value="service_finished">Serviço Finalizado</option>
+                                        <option value="warranty">Garantia</option>
+                                        <option value="no_repair">Sem reparo</option>
+                                        <option value="finished">Finalizada</option>
+                                        <option value="canceled">Cancelada</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="space-y-3" id="status-timeline">
                                 @foreach($serviceOrder->statusLogs as $log)
-                                <div class="flex items-start space-x-4 p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                                @php
+                                    $new = $log->new_status;
+                                    $bg = match($new){
+                                        'open' => 'bg-gray-500',
+                                        'in_progress' => 'bg-blue-500',
+                                        'in_service' => 'bg-indigo-500',
+                                        'service_finished' => 'bg-teal-500',
+                                        'warranty' => 'bg-purple-500',
+                                        'no_repair' => 'bg-yellow-500',
+                                        'finished' => 'bg-green-600',
+                                        'canceled' => 'bg-red-600',
+                                        default => 'bg-gray-500'
+                                    };
+                                    $iconPath = match($new){
+                                        'open' => 'M12 6v6l4 2',
+                                        'in_progress' => 'M12 8v4m0 4h.01',
+                                        'in_service' => 'M3 3h18M9 7h6m-9 4h12m-9 4h6',
+                                        'service_finished' => 'M5 13l4 4L19 7',
+                                        'warranty' => 'M9 12l2 2 4-4',
+                                        'no_repair' => 'M6 18L18 6M6 6l12 12',
+                                        'finished' => 'M5 13l4 4L19 7',
+                                        'canceled' => 'M6 18L18 6M6 6l12 12',
+                                        default => 'M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15'
+                                    };
+                                @endphp
+                                <div class="flex items-start space-x-4 p-3 bg-gray-50 border border-gray-200 rounded-lg" data-status="{{ $log->new_status }}">
                                     <div class="flex-shrink-0">
-                                        <div class="w-6 h-6 bg-gray-500 rounded-full flex items-center justify-center">
+                                        <div class="w-6 h-6 {{ $bg }} rounded-full flex items-center justify-center">
                                             <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="{{ $iconPath }}"/>
                                             </svg>
                                         </div>
                                     </div>
@@ -764,10 +805,15 @@
                                 </button>
                                 @endif
                             </div>
-                            
                             @if($serviceOrder->occurrences && $serviceOrder->occurrences->count() > 0)
                             <div class="space-y-3" id="occurrences-timeline">
                                 @foreach($serviceOrder->occurrences as $occurrence)
+                                @php
+                                    $hasAttachment = false;
+                                    if (isset($occurrence->attachment_url) && $occurrence->attachment_url) { $hasAttachment = true; }
+                                    elseif (isset($occurrence->attachment) && $occurrence->attachment) { $hasAttachment = true; }
+                                    elseif (isset($occurrence->files) && $occurrence->files) { try { $hasAttachment = count($occurrence->files) > 0; } catch (\Throwable $e) { $hasAttachment = false; } }
+                                @endphp
                                 <div class="flex items-start space-x-4 p-4 bg-gray-50 border border-gray-200 rounded-lg">
                                     <div class="flex-shrink-0">
                                         <div class="w-8 h-8 bg-gray-500 rounded-full flex items-center justify-center">
@@ -783,6 +829,12 @@
                                                 <span class="px-2 py-1 text-xs rounded-full {{ $occurrence->priority_color }}">{{ $occurrence->priority_name }}</span>
                                                 @if($occurrence->is_internal)
                                                 <span class="px-2 py-1 text-xs rounded-full bg-red-100 text-red-800">Interna</span>
+                                                @endif
+                                                @if($hasAttachment)
+                                                <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs bg-yellow-100 text-yellow-800">
+                                                    <svg class="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12.79V7a2 2 0 00-2-2h-4.79M7 17l9-9m0 0l-3-3m3 3h-3"/></svg>
+                                                    Anexo
+                                                </span>
                                                 @endif
                                             </div>
                                             <span class="text-xs text-gray-500">{{ $occurrence->created_at->format('d/m/Y H:i') }}</span>
@@ -804,6 +856,21 @@
                             <div class="space-y-3 hidden" id="occurrences-timeline"></div>
                             @endif
                         </div>
+
+                        <script>
+                        document.addEventListener('DOMContentLoaded', function(){
+                            const sel = document.getElementById('status-filter');
+                            if (sel) {
+                                sel.addEventListener('change', function(){
+                                    const val = this.value;
+                                    document.querySelectorAll('#status-timeline [data-status]')?.forEach(function(el){
+                                        if (!val) { el.classList.remove('hidden'); return; }
+                                        el.classList.toggle('hidden', el.getAttribute('data-status') !== val);
+                                    });
+                                });
+                            }
+                        });
+                        </script>
 
                         <!-- Informações de Garantia -->
                         @if($serviceOrder->is_warranty || $serviceOrder->warranty_until)

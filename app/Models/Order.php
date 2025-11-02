@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
+use App\Models\ReturnModel;
 
 class Order extends Model
 {
@@ -159,6 +160,100 @@ class Order extends Model
     public function audits()
     {
         return $this->hasMany(OrderAudit::class);
+    }
+
+    /**
+     * Verifica se pedido pode ser reaberto
+     * Bloqueia se há NFe transmitida ou se nfe_issued_at está preenchido
+     */
+    public function canBeReopened(): bool
+    {
+        // Usa o accessor hasSuccessfulNfe que já existe
+        if ($this->has_successful_nfe || !empty($this->nfe_issued_at)) {
+            return false;
+        }
+        
+        // Só pode reabrir se estiver finalizado ou com devolução parcial
+        return in_array($this->status, ['fulfilled', 'partial_returned'], true);
+    }
+
+    /**
+     * Retorna itens com devoluções (parciais ou totais)
+     * Retorna Collection com dados de cada item afetado
+     */
+    public function getItemsWithPartialReturns(): \Illuminate\Support\Collection
+    {
+        $items = collect();
+        
+        foreach ($this->items as $item) {
+            $returnedQty = $item->returned_quantity;
+            $remainingQty = $item->remaining_quantity;
+            
+            // Inclui se tem devolução (parcial ou total)
+            // Parcial: tem devolução mas ainda tem quantidade restante
+            // Total: foi totalmente devolvido (remaining = 0)
+            if ($returnedQty > 0) {
+                $items->push([
+                    'item_id' => $item->id,
+                    'name' => $item->name,
+                    'sold' => (float) $item->quantity,
+                    'returned' => $returnedQty,
+                    'remaining' => $remainingQty,
+                    'has_discount' => ((float)($item->discount_value ?? 0)) > 0,
+                    'discount_value' => (float) ($item->discount_value ?? 0),
+                    'unit_price' => (float) $item->unit_price,
+                ]);
+            }
+        }
+        
+        return $items;
+    }
+
+    /**
+     * Calcula totais ajustados considerando devoluções
+     * Retorna array com ['subtotal', 'discount', 'addition', 'total']
+     */
+    public function getAdjustedTotals(): array
+    {
+        $subtotal = 0;
+        $discount = 0;
+        $addition = 0;
+        
+        foreach ($this->items as $item) {
+            $remainingQty = $item->remaining_quantity;
+            
+            // Se item foi totalmente devolvido, pula
+            if ($remainingQty <= 0) {
+                continue;
+            }
+            
+            $lineTotal = $remainingQty * (float) $item->unit_price;
+            $subtotal += $lineTotal;
+            
+            // Desconto é zerado para itens com devolução parcial (política atual)
+            // Pode ser ajustado para proporcional se necessário
+            // $discount += ($remainingQty / (float) $item->quantity) * (float) ($item->discount_value ?? 0);
+            
+            // Acréscimo também zerado (mesma política)
+            // $addition += ($remainingQty / (float) $item->quantity) * (float) ($item->addition_value ?? 0);
+        }
+        
+        $total = $subtotal - $discount + $addition;
+        
+        return [
+            'subtotal' => round($subtotal, 2),
+            'discount' => round($discount, 2),
+            'addition' => round($addition, 2),
+            'total' => round($total, 2),
+        ];
+    }
+
+    /**
+     * Relacionamento com devoluções
+     */
+    public function returns()
+    {
+        return $this->hasMany(ReturnModel::class, 'order_id');
     }
 }
 

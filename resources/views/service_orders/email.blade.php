@@ -55,6 +55,18 @@
             </div>
         </div>
 
+        @if($serviceOrder->status === 'canceled')
+        <div class="mb-6 bg-yellow-50 border border-yellow-200 rounded-lg p-4 flex items-start gap-3">
+            <svg class="w-5 h-5 text-yellow-600 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            <div class="text-yellow-900">
+                <div class="font-semibold">OS Cancelada</div>
+                <div class="text-sm mt-1">Esta ordem de serviço foi cancelada. Considere explicar o motivo do cancelamento na mensagem para o cliente.</div>
+            </div>
+        </div>
+        @endif
+
         <!-- Formulário de Email -->
         <div class="bg-white p-6 rounded-lg shadow">
             @if($errors->any())
@@ -101,6 +113,9 @@
                         <option value="">Personalizado</option>
                         <option value="approval_request" @selected(old('template')==='approval_request')>Solicitar Aprovação (Orçamento)</option>
                         <option value="ready_for_pickup" @selected(old('template')==='ready_for_pickup')>Pronto para retirada</option>
+                        @if($serviceOrder->status === 'canceled')
+                        <option value="cancellation" @selected(old('template')==='cancellation')>Cancelamento de OS</option>
+                        @endif
                     </select>
                     <p class="mt-1 text-sm text-gray-500">Escolha um template ou deixe em branco para mensagem personalizada</p>
                 </div>

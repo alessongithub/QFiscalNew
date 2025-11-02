@@ -24,24 +24,53 @@
 
     <div class="max-w-6xl mx-auto">
         @if(session('success'))
-        <div class="mb-6 p-4 bg-green-50 border-l-4 border-green-500 rounded-r-lg">
-            <div class="flex">
-                <div class="flex-shrink-0">
-                    <svg class="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path>
-                    </svg>
-                </div>
-                <div class="ml-3">
-                    <p class="text-green-700 font-medium">{{ session('success') }}</p>
-                </div>
-            </div>
-        </div>
+            <script>
+                (function(){
+                    var msg = @json(session('success'));
+                    var fire = function(){
+                        if (window.showNotification && typeof window.showNotification === 'function') {
+                            window.showNotification(msg, 'success');
+                        } else {
+                            // fallback mínimo
+                            var n = document.createElement('div');
+                            n.className = 'fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg text-white font-medium bg-green-500';
+                            n.textContent = msg;
+                            document.body.appendChild(n);
+                            setTimeout(function(){ n.remove(); }, 3000);
+                        }
+                    };
+                    if (document.readyState === 'loading') {
+                        document.addEventListener('DOMContentLoaded', fire);
+                    } else { fire(); }
+                })();
+            </script>
+        @endif
+        @if($errors->any())
+            <script>
+                (function(){
+                    var msg = @json($errors->first());
+                    var fire = function(){
+                        if (window.showNotification && typeof window.showNotification === 'function') {
+                            window.showNotification(msg, 'error');
+                        } else {
+                            var n = document.createElement('div');
+                            n.className = 'fixed top-4 right-4 z-50 px-4 py-3 rounded-lg shadow-lg text-white font-medium bg-red-500';
+                            n.textContent = msg;
+                            document.body.appendChild(n);
+                            setTimeout(function(){ n.remove(); }, 3000);
+                        }
+                    };
+                    if (document.readyState === 'loading') {
+                        document.addEventListener('DOMContentLoaded', fire);
+                    } else { fire(); }
+                })();
+            </script>
         @endif
 
-        <form method="POST" action="{{ route('settings.update') }}" enctype="multipart/form-data" class="space-y-8">
+        <form method="POST" action="{{ ($showFiscal ?? false) ? route('settings.fiscal.update') : route('settings.update') }}" enctype="multipart/form-data" class="space-y-8">
             @csrf @method('PUT')
             
-            @if(method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('settings.edit'))
+            @if((($showGeneral ?? true)) && method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('settings.edit'))
             
             <!-- Configurações Gerais -->
             <div class="bg-white rounded-xl shadow-lg overflow-hidden">
@@ -160,6 +189,30 @@
                                 <option value="boleto" @selected(($values['pos.default_installment_method']??'boleto')==='boleto')>🧾 Boleto</option>
                                 <option value="card" @selected(($values['pos.default_installment_method']??'boleto')==='card')>💳 Cartão</option>
                 </select>
+            </div>
+
+            <!-- Retenção de Logs -->
+            <div class="bg-white rounded-xl shadow-lg overflow-hidden">
+                <div class="px-6 py-4 border-b border-gray-200" style="background: linear-gradient(90deg, #37415115, #11182715);">
+                    <h2 class="text-xl font-semibold text-gray-800 flex items-center">
+                        <svg class="w-6 h-6 mr-3 text-gray-700" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        Retenção de Logs de Atividades
+                    </h2>
+                </div>
+                <div class="p-6 space-y-6">
+                    <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div class="space-y-2">
+                            <label class="block text-sm font-medium text-gray-700">Dias de retenção (aplica para todos os tipos)</label>
+                            <input type="number" name="logs_retention_days" min="30" max="1095"
+                                   value="{{ $logsRetentionDays ?? 180 }}"
+                                   class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-gray-700 focus:border-transparent transition-all"
+                                   placeholder="180">
+                            <p class="text-xs text-gray-500">Mínimo 30 dias, máximo 1095 (3 anos). Um job diário faz a limpeza automática.</p>
+                        </div>
+                    </div>
+                </div>
             </div>
                     </div>
                 </div>
@@ -353,7 +406,7 @@
             </div>
             @endif
 
-            @if(method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('tax_config.edit'))
+            @if((($showFiscal ?? true)) && method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('tax_config.edit'))
             <!-- Configurações Fiscais -->
             <div class="bg-white rounded-xl shadow-lg overflow-hidden">
                 <div class="px-6 py-4 border-b border-gray-200" style="background: linear-gradient(90deg, #DC262615, #B9173115);">
@@ -407,6 +460,21 @@
                         </div>
                     </div>
                     
+                    @if($taxConfig->updatedBy)
+                    <div class="mb-4 bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <div class="flex items-center gap-2 text-sm text-blue-800">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                            </svg>
+                            <span class="font-medium">Última alteração:</span>
+                            <span>{{ $taxConfig->updatedBy->name }}</span>
+                            @if($taxConfig->updated_at)
+                                <span class="text-blue-600">em {{ $taxConfig->updated_at->format('d/m/Y H:i') }}</span>
+                            @endif
+                        </div>
+                    </div>
+                    @endif
+                    
                     <div class="bg-gray-50 rounded-lg p-4">
                         <h3 class="text-lg font-medium text-gray-800 mb-4">Lei da Transparência (IBPT)</h3>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -429,7 +497,7 @@
             </div>
             @endif
 
-            @if(method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('tax_config.edit'))
+            @if((($showFiscal ?? true)) && method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('tax_config.edit'))
             <!-- Emissor de NF-e -->
             <div class="bg-white rounded-xl shadow-lg overflow-hidden">
                 <div class="px-6 py-4 border-b border-gray-200" style="background: linear-gradient(90deg, #10B98115, #05966915);">
@@ -627,11 +695,16 @@
 
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                         <div class="space-y-2">
-                            <label class="block text-sm font-medium text-gray-700">Certificado A1 (.pfx)</label>
-                            <input type="file" name="emitter[certificate_file]" accept=".pfx,application/x-pkcs12" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
-                            @if($emitter->certificate_path)
-                                <p class="text-xs text-gray-500 mt-1">Atual: {{ $emitter->certificate_path }}</p>
-                            @endif
+                            <label class="block text-sm font-medium text-gray-700">Certificado A1 (.pfx/.p12)</label>
+                            <input type="file" name="emitter[certificate_file]" id="emitter-cert-file" accept=".pfx,.p12,application/x-pkcs12,application/octet-stream" class="w-full px-4 py-2 border border-gray-300 rounded-lg">
+                            <p class="text-xs text-gray-600 mt-1">
+                                Selecionado: <span id="cert-selected-label" class="font-medium">
+                                    @php
+                                        $currentCert = $emitter->certificate_path ? basename($emitter->certificate_path) : null;
+                                    @endphp
+                                    {{ $currentCert ?? 'Nenhum' }}
+                                </span>
+                            </p>
                         </div>
                         <div class="space-y-2">
                             <label class="block text-sm font-medium text-gray-700">Senha do Certificado</label>
@@ -644,6 +717,7 @@
                                     </svg>
                                 </button>
                             </div>
+                            <p class="text-xs text-gray-500 mt-1">A senha do A1 é necessária para assinar NF-e.</p>
                         </div>
                         <div class="space-y-2">
                             <label class="block text-sm font-medium text-gray-700">Validade do Certificado</label>
@@ -652,7 +726,7 @@
                     </div>
 
                     <!-- Certificados Instalados no Windows -->
-                    <div class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
+                    <div class="hidden bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6">
                         <div class="flex items-center justify-between mb-4">
                             <h3 class="text-lg font-medium text-blue-800 flex items-center">
                                 <svg class="w-5 h-5 mr-2 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -946,6 +1020,8 @@
                 setTimeout(() => notification.remove(), 300);
             }, 3000);
         }
+        // Tornar disponível globalmente para ser usado por scripts inline de flash
+        window.showNotification = showNotification;
 
         // Event listeners para CEP
         if (zip) {
@@ -998,6 +1074,21 @@
         }
 
         addRealTimeValidation();
+
+        // Atualizar label do certificado selecionado
+        (function(){
+            var input = document.getElementById('emitter-cert-file');
+            var label = document.getElementById('cert-selected-label');
+            if (input && label) {
+                input.addEventListener('change', function(){
+                    if (this.files && this.files.length > 0) {
+                        label.textContent = this.files[0].name || 'Selecionado';
+                    } else {
+                        label.textContent = 'Nenhum';
+                    }
+                });
+            }
+        })();
 
         // === CERTIFICADOS INSTALADOS ===
         const loadCertificatesBtn = document.getElementById('load-certificates-btn');

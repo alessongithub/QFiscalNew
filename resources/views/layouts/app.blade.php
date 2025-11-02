@@ -208,23 +208,7 @@
                         </x-slot>
                     </x-sidebar-link>
                     @endif
-                    @if(method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('tax_rates.view'))
-                    <a href="{{ route('tax_rates.index') }}" class="flex items-center px-6 py-2 text-white hover:bg-green-600 transition-colors {{ request()->routeIs('tax_rates.*') ? 'bg-green-600 border-r-4 border-green-400' : '' }}">
-                        <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h18M8 8h8M5 13h14M7 18h10" />
-                        </svg>
-                        Tributações
-                    </a>
-                    @endif
-                    @if(method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('tax_config.edit'))
-                    @php $lm_nav = (bool) config('app.limited_mode', false); $isFree_nav = optional(auth()->user()->tenant?->plan)->slug === 'free'; @endphp
-                    <a href="{{ route('ncm_rules.index') }}" class="flex items-center px-6 py-2 text-white hover:bg-green-600 transition-colors {{ request()->routeIs('ncm_rules.*') ? 'bg-green-600 border-r-4 border-green-400' : '' }} {{ ($lm_nav || $isFree_nav) ? 'opacity-60 pointer-events-none cursor-not-allowed' : '' }}" title="{{ ($lm_nav || $isFree_nav) ? 'Recurso disponível apenas em planos pagos' : '' }}">
-                        <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h18M8 8h8M5 13h14M7 18h10" />
-                        </svg>
-                        Regras NCM → GTIN
-                    </a>
-                    @endif
+                    
                     @if(method_exists(auth()->user(), 'hasRoleSlug') && auth()->user()->hasRoleSlug('admin'))
                     <a href="{{ route('users.index') }}" class="flex items-center px-6 py-2 text-white hover:bg-green-600 transition-colors {{ request()->routeIs('users.*') ? 'bg-green-600 border-r-4 border-green-400' : '' }}">
                         <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -412,13 +396,47 @@
                         Fornecedores
                     </a>
                     @endif
+                    @if(method_exists(auth()->user(), 'hasPermission') && (auth()->user()->hasPermission('tax_config.view') || auth()->user()->hasPermission('tax_rates.view') || auth()->user()->hasRoleSlug('accountant')))
                     <div class="px-6 pt-4 pb-2 text-xs uppercase tracking-wide text-gray-400">Contabilidade</div>
-                    <a class="flex items-center px-6 py-2 text-gray-400 cursor-not-allowed select-none">
+                    @endif
+                    @if(method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('tax_rates.view'))
+                    <a href="{{ route('tax_rates.index') }}" class="flex items-center px-6 py-2 text-white hover:bg-green-600 transition-colors {{ request()->routeIs('tax_rates.*') ? 'bg-green-600 border-r-4 border-green-400' : '' }}">
                         <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-7 4h8M7 8h10M5 6h14l-1 12a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
                         </svg>
-                        Contabilidade (em breve)
+                        Tributações
                     </a>
+                    @endif
+                    @if(method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('tax_config.edit'))
+                    @php $lm_nav = (bool) config('app.limited_mode', false); $isFree_nav = optional(auth()->user()->tenant?->plan)->slug === 'free'; @endphp
+                    <a href="{{ route('ncm_rules.index') }}" class="flex items-center px-6 py-2 text-white hover:bg-green-600 transition-colors {{ request()->routeIs('ncm_rules.*') ? 'bg-green-600 border-r-4 border-green-400' : '' }} {{ ($lm_nav || $isFree_nav) ? 'opacity-60 pointer-events-none cursor-not-allowed' : '' }}" title="{{ ($lm_nav || $isFree_nav) ? 'Recurso disponível apenas em planos pagos' : '' }}">
+                        <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 3h18M8 8h8M5 13h14M7 18h10" />
+                        </svg>
+                        Regras NCM → GTIN
+                    </a>
+                    @endif
+                    @if(method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('tax_config.view'))
+                    <a href="{{ route('settings.fiscal.edit') }}" class="flex items-center px-6 py-2 text-white hover:bg-green-600 transition-colors {{ request()->routeIs('settings.fiscal.*') ? 'bg-green-600 border-r-4 border-green-400' : '' }}">
+                        <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/>
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+                        </svg>
+                        Configurações Fiscais
+                    </a>
+                    @endif
+                    @if(method_exists(auth()->user(), 'hasPermission') && (auth()->user()->hasPermission('reports.view') || auth()->user()->hasPermission('calendar.view') || (auth()->user()->is_admin || auth()->user()->hasRoleSlug('admin'))))
+                    <div class="px-6 py-2 text-xs font-semibold text-gray-400 uppercase tracking-wider sidebar-divider-text">Relatórios</div>
+                    <div class="h-px bg-gray-700 sidebar-divider-line"></div>
+                    @endif
+                    @if(auth()->user()->is_admin || auth()->user()->hasRoleSlug('admin'))
+                    <a href="{{ route('activity.index') }}" class="flex items-center px-6 py-3 text-white hover:bg-green-600 transition-colors {{ request()->routeIs('activity.*') ? 'bg-green-600 border-r-4 border-green-400' : '' }}">
+                        <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        Atividades
+                    </a>
+                    @endif
                     @if(method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('reports.view'))
                     <a href="{{ route('reports.index') }}" class="flex items-center px-6 py-3 text-white hover:bg-green-600 transition-colors {{ request()->routeIs('reports.*') ? 'bg-green-600 border-r-4 border-green-400' : '' }} {{ ($lm_menu || $isFree_menu) ? 'opacity-60 pointer-events-none cursor-not-allowed' : '' }}">
                         <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -509,7 +527,7 @@
                                 <a href="#" onclick="downloadEmissor()" class="inline-flex items-center px-3 py-2 bg-green-600 text-white rounded text-sm font-medium">
                                     <i class="fas fa-download mr-2"></i>Baixar Emissor Fiscal
                                 </a>
-                                <p class="text-xs text-green-700 mt-1">Acesso ao emissor Delphi incluído</p>
+                                <p class="text-xs text-green-700 mt-1">Acesso ao emissor fiscal incluído</p>
                             </div>
                             @endif
                             <div class="p-3 border-t bg-gray-50 flex justify-between items-center">
@@ -550,7 +568,7 @@
         <script>
             function downloadEmissor() {
                 // Por enquanto, mostrar uma mensagem informativa
-                alert('Emissor Fiscal Delphi\n\nPara baixar o emissor, entre em contato conosco:\nEmail: contato@qfiscal.com.br\nWhatsApp: 947146126\n\nO emissor será disponibilizado em breve!');
+                alert('Emissor Fiscal\n\nPara baixar o emissor, entre em contato conosco:\nEmail: contato@qfiscal.com.br\nWhatsApp: 947146126\n\nO emissor será disponibilizado em breve!');
             }
         </script>
         @stack('scripts')
