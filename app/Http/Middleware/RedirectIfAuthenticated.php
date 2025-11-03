@@ -17,6 +17,10 @@ class RedirectIfAuthenticated
                 if ($guard === 'partner') {
                     return redirect()->route('partner.dashboard');
                 }
+                // Se for admin, redirecionar para o dashboard admin
+                if (auth($guard)->user()->is_admin) {
+                    return redirect('/admin/dashboard');
+                }
                 return redirect('/dashboard');
             }
         }

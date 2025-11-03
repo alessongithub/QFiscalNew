@@ -355,8 +355,6 @@ Route::post('service_orders/{service_order}/extend-warranty', [ServiceOrderContr
     Route::put('/receipts/{receipt}', [ReceiptController::class, 'update'])->name('receipts.update');
     Route::delete('/receipts/{receipt}', [ReceiptController::class, 'destroy'])->name('receipts.destroy');
     Route::get('/receipts/{receipt}/print', [ReceiptController::class, 'print'])->name('receipts.print');
-    Route::get('/receipts/{receipt}/email', [ReceiptController::class, 'emailForm'])->name('receipts.email_form');
-    Route::post('/receipts/{receipt}/email', [ReceiptController::class, 'sendEmail'])->name('receipts.email_send');
 
     // Calendário
     Route::get('/calendar', [CalendarController::class, 'index'])->name('calendar.index');
@@ -417,6 +415,13 @@ Route::middleware(['auth', \App\Http\Middleware\AdminMiddleware::class])->prefix
         Route::get('/plans', [App\Http\Controllers\Admin\AdminController::class, 'plans'])->name('plans');
         Route::get('/plans/create', [App\Http\Controllers\Admin\AdminController::class, 'createPlan'])->name('plans.create');
         Route::post('/plans', [App\Http\Controllers\Admin\AdminController::class, 'storePlan'])->name('plans.store');
+        
+        // Regras NCM → GTIN (Admin)
+        Route::get('/ncm-rules', [App\Http\Controllers\Admin\NcmRuleController::class, 'index'])->name('ncm_rules.index');
+        Route::get('/ncm-rules/export', [App\Http\Controllers\Admin\NcmRuleController::class, 'exportRules'])->name('ncm_rules.export');
+        Route::get('/ncm-rules/import', [App\Http\Controllers\Admin\NcmRuleController::class, 'importForm'])->name('ncm_rules.import');
+        Route::post('/ncm-rules/import', [App\Http\Controllers\Admin\NcmRuleController::class, 'import'])->name('ncm_rules.import.store');
+        Route::delete('/ncm-rules/{ncm_rule}', [App\Http\Controllers\Admin\NcmRuleController::class, 'destroy'])->name('ncm_rules.destroy');
         Route::get('/plans/{plan}/edit', [App\Http\Controllers\Admin\AdminController::class, 'editPlan'])->name('plans.edit');
         Route::put('/plans/{plan}', [App\Http\Controllers\Admin\AdminController::class, 'updatePlan'])->name('plans.update');
         Route::post('/plans/{plan}/toggle', [App\Http\Controllers\Admin\AdminController::class, 'togglePlanStatus'])->name('plans.toggle');

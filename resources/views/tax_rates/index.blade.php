@@ -208,80 +208,57 @@
                     <table class="min-w-full divide-y divide-gray-200">
                         <thead class="bg-gray-50">
                             <tr>
-                                <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nome</th>
-                                <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tipo</th>
-                                <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">NCM</th>
-                                <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">CFOP</th>
-                                <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                                <th scope="col" class="px-3 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Auditoria</th>
+                                <th scope="col" class="px-3 py-2 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Nome</th>
+                                <th scope="col" class="px-3 py-2 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Tipo</th>
+                                <th scope="col" class="px-3 py-2 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">NCM</th>
+                                <th scope="col" class="px-3 py-2 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">CFOP</th>
+                                <th scope="col" class="px-3 py-2 text-left text-sm font-medium text-gray-500 uppercase tracking-wider">Status</th>
                                 <th scope="col" class="relative px-3 py-2"><span class="sr-only">Ações</span></th>
                             </tr>
                         </thead>
                         <tbody class="bg-white divide-y divide-gray-200">
                             @forelse($rates as $r)
                             <tr class="hover:bg-gray-50 transition-colors">
-                                <td class="px-3 py-2 whitespace-nowrap text-xs text-gray-900 max-w-xs truncate" title="{{ $r->name ?: '—' }}">{{ $r->name ?: '—' }}</td>
+                                <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900 max-w-xs truncate" title="{{ $r->name ?: '—' }}">{{ $r->name ?: '—' }}</td>
                                 <td class="px-3 py-2 whitespace-nowrap">
                                     <div class="flex items-center">
                                         @if($r->tipo_nota === 'produto')
-                                            <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                            <span class="inline-flex items-center px-2 py-1 rounded-full text-sm font-medium bg-blue-100 text-blue-800">
                                                 🏷️ Produto
                                             </span>
                                         @else
-                                            <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-800">
+                                            <span class="inline-flex items-center px-2 py-1 rounded-full text-sm font-medium bg-purple-100 text-purple-800">
                                                 ⚙️ Serviço
                                             </span>
                                         @endif
                                     </div>
                                 </td>
-                                <td class="px-3 py-2 whitespace-nowrap text-xs text-gray-900 font-mono">{{ $r->ncm ?? '—' }}</td>
-                                <td class="px-3 py-2 whitespace-nowrap text-xs text-gray-900 font-mono">{{ $r->cfop ?? '—' }}</td>
+                                <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900 font-mono">{{ $r->ncm ?? '—' }}</td>
+                                <td class="px-3 py-2 whitespace-nowrap text-sm text-gray-900 font-mono">{{ $r->cfop ?? '—' }}</td>
                                 <td class="px-3 py-2 whitespace-nowrap">
                                     @if($r->ativo)
-                                        <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800">
+                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-sm font-medium bg-green-100 text-green-800">
                                             ✓ Ativo
                                         </span>
                                     @else
-                                        <span class="inline-flex items-center px-1.5 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-800">
+                                        <span class="inline-flex items-center px-2 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-800">
                                             ✗ Inativo
                                         </span>
                                     @endif
                                 </td>
-                                <td class="px-3 py-2 whitespace-nowrap text-xs text-gray-600">
-                                    <div class="space-y-1">
-                                        @if($r->createdBy)
-                                            <div class="flex items-center gap-1">
-                                                <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                                                </svg>
-                                                <span class="text-gray-500">Criado por:</span>
-                                                <span class="font-medium">{{ $r->createdBy->name }}</span>
-                                            </div>
-                                        @endif
-                                        @if($r->updatedBy && $r->updatedBy->id !== ($r->createdBy->id ?? null))
-                                            <div class="flex items-center gap-1">
-                                                <svg class="w-3 h-3 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
-                                                </svg>
-                                                <span class="text-gray-500">Editado por:</span>
-                                                <span class="font-medium">{{ $r->updatedBy->name }}</span>
-                                            </div>
-                                        @endif
-                                    </div>
-                                </td>
-                                <td class="px-3 py-2 whitespace-nowrap text-right text-xs font-medium">
-                                    <div class="flex items-center justify-end space-x-1">
+                                <td class="px-3 py-2 whitespace-nowrap text-right text-sm font-medium">
+                                    <div class="flex items-center justify-end space-x-2">
                                         @if(method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('tax_rates.view'))
-                                        <a href="{{ route('tax_rates.show', $r) }}" class="inline-flex items-center px-2 py-1 border border-transparent text-xs font-medium rounded text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors" title="Visualizar">
-                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <a href="{{ route('tax_rates.show', $r) }}" class="inline-flex items-center px-2.5 py-1.5 border border-transparent text-sm font-medium rounded text-blue-700 bg-blue-100 hover:bg-blue-200 focus:outline-none focus:ring-1 focus:ring-blue-500 transition-colors" title="Visualizar">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.477 0 8.268 2.943 9.542 7-1.274 4.057-5.065 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                                             </svg>
                                         </a>
                                         @endif
                                         @if(method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('tax_rates.edit'))
-                                        <a href="{{ route('tax_rates.edit', $r) }}" class="inline-flex items-center px-2 py-1 border border-transparent text-xs font-medium rounded text-green-700 bg-green-100 hover:bg-green-200 focus:outline-none focus:ring-1 focus:ring-green-500 transition-colors" title="Editar">
-                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <a href="{{ route('tax_rates.edit', $r) }}" class="inline-flex items-center px-2.5 py-1.5 border border-transparent text-sm font-medium rounded text-green-700 bg-green-100 hover:bg-green-200 focus:outline-none focus:ring-1 focus:ring-green-500 transition-colors" title="Editar">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/>
                                             </svg>
                                         </a>
@@ -289,8 +266,8 @@
                                         @if(method_exists(auth()->user(), 'hasPermission') && auth()->user()->hasPermission('tax_rates.delete'))
                                         <form action="{{ route('tax_rates.destroy', $r) }}" method="POST" class="inline" onsubmit="return confirm('Tem certeza que deseja excluir esta configuração tributária?\n\nEsta ação não pode ser desfeita.')">
                                             @csrf @method('DELETE')
-                                            <button type="submit" class="inline-flex items-center px-2 py-1 border border-transparent text-xs font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 focus:outline-none focus:ring-1 focus:ring-red-500 transition-colors" title="Excluir">
-                                                <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <button type="submit" class="inline-flex items-center px-2.5 py-1.5 border border-transparent text-sm font-medium rounded text-red-700 bg-red-100 hover:bg-red-200 focus:outline-none focus:ring-1 focus:ring-red-500 transition-colors" title="Excluir">
+                                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
                                                 </svg>
                                             </button>
@@ -301,7 +278,7 @@
                             </tr>
                             @empty
                             <tr>
-                                <td colspan="7" class="px-3 py-8 text-center">
+                                <td colspan="6" class="px-3 py-8 text-center">
                                     <div class="flex flex-col items-center">
                                         <svg class="w-8 h-8 text-gray-400 mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 7h6m0 10v-3m-3 3h.01M9 17h.01M9 14h.01M12 14h.01M15 11h.01M12 11h.01M9 11h.01M7 21h10a2 2 0 002-2V5a2 2 0 00-2-2H7a2 2 0 00-2 2v14a2 2 0 002 2z"/>

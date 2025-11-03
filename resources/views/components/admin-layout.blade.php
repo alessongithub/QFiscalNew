@@ -47,7 +47,7 @@
                             <x-nav-link :href="route('admin.news.index')" :active="request()->routeIs('admin.news*')">
                                 Novidades
                             </x-nav-link>
-                            <x-nav-link :href="route('ncm_rules.index')" :active="request()->routeIs('ncm_rules*')">
+                            <x-nav-link :href="route('admin.ncm_rules.index')" :active="request()->routeIs('admin.ncm_rules*')">
                                 Regras NCM→GTIN
                             </x-nav-link>
                         </div>
