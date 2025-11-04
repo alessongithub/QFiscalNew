@@ -335,12 +335,13 @@
                             <div class="relative">
                                 <input type="number" step="0.01" min="0" max="2" 
                                        name="boleto[fine_percent]" value="{{ $values['boleto.fine_percent'] ?? '0' }}" 
-                                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all">
+                                       class="w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50 text-gray-600 cursor-not-allowed"
+                                       disabled readonly>
                                 <div class="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
                                     <span class="text-gray-400 text-sm">%</span>
                                 </div>
                             </div>
-                            <p class="text-xs text-gray-500">Máximo de 2% por lei</p>
+                            <p class="text-xs text-gray-500">Máximo de 2% por lei. Configurado diretamente no painel do Mercado Pago.</p>
                         </div>
                         
                         <div class="space-y-2">
@@ -348,12 +349,13 @@
                             <div class="relative">
                                 <input type="number" step="0.01" min="0" max="1" 
                                        name="boleto[interest_month_percent]" value="{{ $values['boleto.interest_month_percent'] ?? '0' }}" 
-                                       class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent transition-all">
+                                       class="w-full px-4 py-3 border border-gray-300 rounded-lg bg-gray-50 text-gray-600 cursor-not-allowed"
+                                       disabled readonly>
                                 <div class="absolute inset-y-0 right-0 pr-3 flex items-center pointer-events-none">
                                     <span class="text-gray-400 text-sm">%</span>
                                 </div>
                             </div>
-                            <p class="text-xs text-gray-500">Máximo 1%/mês (~0,033%/dia)</p>
+                            <p class="text-xs text-gray-500">Máximo 1%/mês (~0,033%/dia). Configurado no Mercado Pago.</p>
                         </div>
                     </div>
                 </div>

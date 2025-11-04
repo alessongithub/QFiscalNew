@@ -496,18 +496,7 @@ class ReceivableController extends Controller
             'date_of_expiration' => Carbon::parse($data['due_date'])->endOfDay()->format('Y-m-d\TH:i:s.000-03:00'),
         ];
 
-        // Multa/juros
-        $finePercent = (float)($data['fine_percent'] ?? (float) \App\Models\Setting::get('boleto.fine_percent', 0));
-        $interestMonth = (float)($data['interest_month_percent'] ?? (float) \App\Models\Setting::get('boleto.interest_month_percent', 0));
-        if ($finePercent > 0 || $interestMonth > 0) {
-            $payload['additional_info'] = [
-                'items' => [[ 'title' => 'Multa/Juros', 'quantity' => 1, 'unit_price' => 0 ]],
-            ];
-            $payload['fee_details'] = [
-                [ 'type' => 'fine', 'amount' => round(((float)$receivable->amount) * ($finePercent/100), 2) ],
-                [ 'type' => 'monthly_interest', 'amount' => round(((float)$receivable->amount) * ($interestMonth/100), 2) ],
-            ];
-        }
+        // Multa/Juros: Mercado Pago (boleto) não aceita configurar na criação — ignorar no payload
 
         \Log::info('Mercado Pago Request Payload', [
             'url' => 'https://api.mercadopago.com/v1/payments',
@@ -549,6 +538,31 @@ class ReceivableController extends Controller
         $receivable->boleto_url = (string) ($json['transaction_details']['external_resource_url'] ?? null);
         $receivable->boleto_pdf_url = (string) ($json['transaction_details']['external_resource_url'] ?? null);
         $receivable->boleto_barcode = (string) ($json['barcode']['content'] ?? ($json['transaction_details']['barcode']['content'] ?? ''));
+
+        // Polling leve: se o link ainda não estiver disponível, tentar consultar o pagamento algumas vezes
+        if (empty($receivable->boleto_url) && !empty($receivable->boleto_mp_id)) {
+            try {
+                $maxTries = 4; // ~3s total
+                for ($i = 0; $i < $maxTries; $i++) {
+                    $poll = \Illuminate\Support\Facades\Http::withToken($accessToken)
+                        ->get('https://api.mercadopago.com/v1/payments/' . $receivable->boleto_mp_id);
+                    if ($poll->successful()) {
+                        $pj = $poll->json();
+                        $link = (string) ($pj['transaction_details']['external_resource_url'] ?? '');
+                        $barcode = (string) ($pj['barcode']['content'] ?? ($pj['transaction_details']['barcode']['content'] ?? ''));
+                        if (!empty($link)) {
+                            $receivable->boleto_url = $link;
+                            $receivable->boleto_pdf_url = $link;
+                            if (!empty($barcode)) { $receivable->boleto_barcode = $barcode; }
+                            break;
+                        }
+                    }
+                    usleep(750000); // 0,75s
+                }
+            } catch (\Throwable $e) {
+                \Log::warning('Polling boleto link failed', ['error' => $e->getMessage()]);
+            }
+        }
         $receivable->boleto_emitted_at = now();
         // Ajusta vencimento se alterado no modal
         $receivable->due_date = $data['due_date'];
@@ -576,7 +590,8 @@ class ReceivableController extends Controller
             $password = (string) ($active->password ?? env('MAIL_PASSWORD'));
             $encryption = strtolower((string) ($active->encryption ?? (env('MAIL_ENCRYPTION') ?: 'tls')));
             $fromAddress = (string) ($active->from_address ?? env('MAIL_FROM_ADDRESS'));
-            $fromName = (string) ($active->from_name ?? (env('MAIL_FROM_NAME') ?: config('app.name')));
+            $tenantCtx = $receivable->tenant ?? (auth()->user()->tenant ?? null);
+            $fromName = (string) (($tenantCtx?->fantasy_name) ?: ($tenantCtx?->name) ?: ($active->from_name ?? (env('MAIL_FROM_NAME') ?: config('app.name'))));
 
             try {
                 $mailer = new PHPMailer(true);
@@ -590,6 +605,16 @@ class ReceivableController extends Controller
                     $fromAddress,
                     $fromName
                 );
+                // Forçar nome do remetente e Reply-To do tenant
+                $tenantName = (string) (($tenantCtx?->fantasy_name) ?: ($tenantCtx?->name) ?: ($fromName));
+                if (!empty($fromAddress)) {
+                    $mailer->setFrom($fromAddress, $tenantName);
+                } elseif (!empty($username)) {
+                    $mailer->setFrom($username, $tenantName);
+                }
+                if (!empty($tenantCtx?->email)) {
+                    $mailer->addReplyTo($tenantCtx->email, $tenantName);
+                }
                 $mailer->addAddress($receivable->client->email, $receivable->client->name ?: 'Cliente');
                 $mailer->isHTML(true);
                 $mailer->Subject = $subject;
@@ -666,6 +691,78 @@ class ReceivableController extends Controller
         } catch (\Throwable $e) { }
 
         return back()->with('success', "Baixa em lote concluída: {$count} títulos, total R$ " . number_format($sum,2,',','.'));
+    }
+
+    public function sendBoletoEmail(Receivable $receivable)
+    {
+        abort_unless(auth()->user()->hasPermission('receivables.receive'), 403);
+        abort_unless($receivable->tenant_id === auth()->user()->tenant_id, 403);
+
+        if (!$receivable->client || empty($receivable->client->email)) {
+            return back()->withErrors(['email' => 'Cliente sem e-mail cadastrado.']);
+        }
+
+        $link = $receivable->boleto_pdf_url ?: $receivable->boleto_url;
+        if (empty($link)) {
+            return back()->withErrors(['email' => 'Não há boleto emitido para este recebível.']);
+        }
+
+        $subject = 'Seu boleto - ' . (string) ($receivable->description ?: 'Cobrança');
+        $body = view('receivables.emails._boleto', [ 'receivable' => $receivable, 'link' => $link ])->render();
+
+        $active = SmtpConfig::where('is_active', true)->first();
+        $host = (string) ($active->host ?? env('MAIL_HOST', '127.0.0.1'));
+        $port = (int) ($active->port ?? (int) env('MAIL_PORT', 2525));
+        $username = (string) ($active->username ?? env('MAIL_USERNAME'));
+        $password = (string) ($active->password ?? env('MAIL_PASSWORD'));
+        $encryption = strtolower((string) ($active->encryption ?? (env('MAIL_ENCRYPTION') ?: 'tls')));
+        $fromAddress = (string) ($active->from_address ?? env('MAIL_FROM_ADDRESS'));
+        $tenantCtx = auth()->user()->tenant ?? null;
+        $fromName = (string) (($tenantCtx?->fantasy_name) ?: ($tenantCtx?->name) ?: ($active->from_name ?? (env('MAIL_FROM_NAME') ?: config('app.name'))));
+        $active = SmtpConfig::where('is_active', true)->first();
+        $host = (string) ($active->host ?? env('MAIL_HOST', '127.0.0.1'));
+        $port = (int) ($active->port ?? (int) env('MAIL_PORT', 2525));
+        $username = (string) ($active->username ?? env('MAIL_USERNAME'));
+        $password = (string) ($active->password ?? env('MAIL_PASSWORD'));
+        $encryption = strtolower((string) ($active->encryption ?? (env('MAIL_ENCRYPTION') ?: 'tls')));
+        $fromAddress = (string) ($active->from_address ?? env('MAIL_FROM_ADDRESS'));
+        $tenantCtx = auth()->user()->tenant ?? null;
+        $fromName = (string) (($tenantCtx?->fantasy_name) ?: ($tenantCtx?->name) ?: ($active->from_name ?? (env('MAIL_FROM_NAME') ?: config('app.name'))));
+
+        try {
+            $mailer = new PHPMailer(true);
+            \App\Http\Controllers\Admin\EmailTestController::configureMailer(
+                $mailer,
+                $host,
+                $port,
+                $username,
+                $password,
+                $encryption,
+                $fromAddress,
+                $fromName
+            );
+            // Forçar nome do remetente e Reply-To do tenant
+            $tenantName = (string) (($tenantCtx?->fantasy_name) ?: ($tenantCtx?->name) ?: ($fromName));
+            if (!empty($fromAddress)) {
+                $mailer->setFrom($fromAddress, $tenantName);
+            } elseif (!empty($username)) {
+                $mailer->setFrom($username, $tenantName);
+            }
+            if (!empty($tenantCtx?->email)) {
+                $mailer->addReplyTo($tenantCtx->email, $tenantName);
+            }
+            $mailer->addAddress($receivable->client->email, $receivable->client->name ?: 'Cliente');
+            $mailer->isHTML(true);
+            $mailer->Subject = $subject;
+            $mailer->Body = $body;
+            $mailer->AltBody = strip_tags($body . "\n" . $link);
+            $mailer->send();
+        } catch (PHPMailerException $e) {
+            \Log::warning('Falha ao enviar boleto por e-mail', ['error' => $e->getMessage()]);
+            return back()->withErrors(['email' => 'Falha ao enviar e-mail.']);
+        }
+
+        return back()->with('success', 'Boleto enviado por e-mail ao cliente.');
     }
 
     private function humanField(string $key): string

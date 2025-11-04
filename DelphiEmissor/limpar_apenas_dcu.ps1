@@ -176,3 +176,4 @@ Write-Host "       (Delphi esta recompilando tudo do zero)" -ForegroundColor Cya
 Write-Host ""
 
 
+

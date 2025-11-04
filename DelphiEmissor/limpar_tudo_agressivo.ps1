@@ -217,3 +217,4 @@ Write-Host "        O Delphi esta recompilando TODO o RTL do zero!" -ForegroundC
 Write-Host ""
 
 
+

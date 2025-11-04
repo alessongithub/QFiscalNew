@@ -298,7 +298,9 @@
                         label="A Receber"
                         :badge="$overdueRecCount > 0 ? $overdueRecCount : null">
                         <x-slot name="icon">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-2.21 0-4 1.343-4 3s1.79 3 4 3 4 1.343 4 3m-4-12v2m0 10v2" />
+                            <!-- Ícone A Receber: seta para baixo em um cartão -->
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7a2 2 0 012-2h14a2 2 0 012 2v3H4a1 1 0 00-1 1V7z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3" />
                         </x-slot>
                     </x-sidebar-link>
                     
@@ -308,7 +310,17 @@
                         :active="request()->routeIs('receivables.*') && request('has_boleto')"
                         label="Boletos">
                         <x-slot name="icon">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 14l2-2 4 4m0 0l4-4m-4 4V3" />
+                            <!-- Ícone Boleto -->
+                            <rect x="3" y="4" width="18" height="16" rx="2" ry="2"></rect>
+                            <line x1="6" y1="8" x2="12" y2="8"></line>
+                            <line x1="6" y1="11" x2="14" y2="11"></line>
+                            <line x1="6" y1="16" x2="6" y2="18"></line>
+                            <line x1="8" y1="16" x2="8" y2="18"></line>
+                            <line x1="9.5" y1="16" x2="9.5" y2="18"></line>
+                            <line x1="11" y1="16" x2="11" y2="18"></line>
+                            <line x1="13" y1="16" x2="13" y2="18"></line>
+                            <line x1="14.5" y1="16" x2="14.5" y2="18"></line>
+                            <line x1="16" y1="16" x2="16" y2="18"></line>
                         </x-slot>
                     </x-sidebar-link>
                     @endif
@@ -321,7 +333,21 @@
                         label="A Pagar"
                         :badge="$overduePayCount > 0 ? $overduePayCount : null">
                         <x-slot name="icon">
-                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-2.21 0-4 1.343-4 3s1.79 3 4 3 4 1.343 4 3m-4-12v2m0 10v2" />
+                            <!-- Ícone A Pagar: seta para cima em um cartão -->
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 17a2 2 0 002 2h14a2 2 0 002-2v-3H4a1 1 0 00-1 1v2z" />
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 14V8m0 0l-3 3m3-3l3 3" />
+                        </x-slot>
+                    </x-sidebar-link>
+                    @endif
+                    @if(auth()->check())
+                    <x-sidebar-link 
+                        href="{{ route('tenant.balance.index') }}" 
+                        :active="request()->routeIs('tenant.balance.*')"
+                        label="Saldo">
+                        <x-slot name="icon">
+                            <!-- Ícone de carteira/saldo -->
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7a2 2 0 012-2h12a2 2 0 012 2v2h-7a3 3 0 000 6h7v2a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" />
+                            <circle cx="15" cy="12" r="1.5" />
                         </x-slot>
                     </x-sidebar-link>
                     @endif

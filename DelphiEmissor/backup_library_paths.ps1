@@ -96,3 +96,4 @@ Write-Host "  Tools -> Options -> Environment Options -> Delphi Options -> Libra
 Write-Host ""
 
 
+

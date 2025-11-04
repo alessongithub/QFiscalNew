@@ -209,3 +209,4 @@ Execute na ordem:
 O Windows 11 pode ter diferenças sutis na API do Windows que fazem com que units compiladas no Windows 10 sejam incompatíveis. Ao recompilar tudo no Windows 11, o problema é resolvido.
 
 
+

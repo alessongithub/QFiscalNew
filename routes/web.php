@@ -158,6 +158,7 @@ Route::middleware(['auth', \App\Http\Middleware\TenantMiddleware::class])->group
     Route::post('receivables/{receivable}/cancel', [ReceivableController::class, 'cancel'])->name('receivables.cancel');
     Route::post('receivables/bulk-receive', [ReceivableController::class, 'receiveBulk'])->name('receivables.bulk_receive');
     Route::post('receivables/{receivable}/emit-boleto', [ReceivableController::class, 'emitBoleto'])->name('receivables.emit_boleto');
+    Route::post('receivables/{receivable}/email-boleto', [ReceivableController::class, 'sendBoletoEmail'])->name('receivables.email_boleto');
     Route::get('test-mp', function() {
         $config = \App\Models\GatewayConfig::current();
         $token = $config->active_access_token;
@@ -439,6 +440,14 @@ Route::middleware(['auth', \App\Http\Middleware\AdminMiddleware::class])->prefix
     Route::put('/news/{news}', [App\Http\Controllers\Admin\NewsController::class, 'update'])->name('news.update');
     Route::delete('/news/{news}', [App\Http\Controllers\Admin\NewsController::class, 'destroy'])->name('news.destroy');
 
+    // Relatório de Boletos por Tenant
+    Route::get('/receivables', [App\Http\Controllers\Admin\AdminController::class, 'receivables'])->name('receivables');
+    // Saldos e Transferências de Tenants
+    Route::get('/balances', [App\Http\Controllers\Admin\AdminController::class, 'balances'])->name('balances');
+    // Perfil do Admin
+    Route::get('/profile', [App\Http\Controllers\Admin\AdminController::class, 'profile'])->name('profile');
+    Route::put('/profile', [App\Http\Controllers\Admin\AdminController::class, 'updateProfile'])->name('profile.update');
+
     // Teste de E-mail
     Route::get('/email-test', [App\Http\Controllers\Admin\EmailTestController::class, 'index'])->name('email-test.index');
     Route::post('/email-test', [App\Http\Controllers\Admin\EmailTestController::class, 'send'])->name('email-test.send');
@@ -448,6 +457,12 @@ Route::middleware(['auth', \App\Http\Middleware\AdminMiddleware::class])->prefix
     Route::post('partners/{partner}/invite', [App\Http\Controllers\Admin\PartnerController::class, 'sendInvite'])->name('partners.invite');
     Route::post('partners/{partner}/credentials', [App\Http\Controllers\Admin\PartnerController::class, 'sendCredentials'])->name('partners.credentials');
 
+});
+
+// Área do Tenant: Saldo e Transferências
+Route::middleware(['auth'])->prefix('tenant')->name('tenant.')->group(function () {
+    Route::get('/balance', [\App\Http\Controllers\Tenant\BalanceController::class, 'index'])->name('balance.index');
+    Route::post('/balance/request-transfer', [\App\Http\Controllers\Tenant\BalanceController::class, 'requestTransfer'])->name('balance.request-transfer');
 });
 
 // Rotas de Redefinição de Senha (fora do middleware de auth)

@@ -129,3 +129,4 @@ Write-Host "       pois o Delphi esta recompilando todas as units do sistema." -
 Write-Host ""
 
 
+

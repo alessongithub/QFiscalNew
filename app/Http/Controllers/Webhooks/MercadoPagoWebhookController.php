@@ -10,6 +10,7 @@ use App\Models\Payment;
 use App\Models\StorageAddon;
 use App\Models\Tenant;
 use App\Models\TenantStorageUsage;
+use App\Models\TenantBalance;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 
@@ -108,6 +109,9 @@ class MercadoPagoWebhookController extends Controller
                 $receivable->payment_method = 'boleto';
                 $receivable->received_at = now();
                 $receivable->save();
+
+                // Criar saldo para repasse (aguardando liquidação)
+                $this->createTenantBalance($receivable, $paymentJson);
             } elseif ($addon) {
                 // Processar pagamento de storage addon
                 if ($addon->status === 'pending') {
@@ -144,6 +148,46 @@ class MercadoPagoWebhookController extends Controller
 
         return response()->json(['status' => 'ok']);
     }
+
+    private function createTenantBalance(Receivable $receivable, array $paymentData): void
+{
+    try {
+        $grossAmount = (float) ($paymentData['transaction_amount'] ?? $receivable->amount);
+
+        // Calcular taxa MP a partir de fee_details quando disponível
+        $fees = $paymentData['fee_details'] ?? [];
+        $totalFee = 0.0;
+        foreach ($fees as $fee) {
+            $totalFee += (float) ($fee['amount'] ?? 0);
+        }
+        // Fallback: usar taxa fixa de boleto configurada globalmente quando o MP não retornar fee_details
+        if ($totalFee > 0) {
+            $mpFeeAmount = $totalFee;
+        } else {
+            $configuredFixedFee = (float) (\App\Models\Setting::getGlobal('boleto.mp_fee_fixed', '1.99'));
+            $mpFeeAmount = round($configuredFixedFee, 2);
+        }
+
+        // Taxa da plataforma de 1%
+        $platformFeeAmount = round($grossAmount * 0.01, 2);
+        $netAmount = max(0, $grossAmount - $mpFeeAmount - $platformFeeAmount);
+
+        TenantBalance::create([
+            'tenant_id' => $receivable->tenant_id,
+            'receivable_id' => $receivable->id,
+            'gross_amount' => $grossAmount,
+            'mp_fee_amount' => $mpFeeAmount,
+            'platform_fee_amount' => $platformFeeAmount,
+            'net_amount' => $netAmount,
+            'status' => 'pending',
+            'payment_received_at' => now(),
+            'mp_payment_id' => (string) ($paymentData['id'] ?? null),
+        ]);
+    } catch (\Throwable $e) {
+        \Log::error('Falha ao criar TenantBalance', [
+            'receivable_id' => $receivable->id,
+            'error' => $e->getMessage(),
+        ]);
+    }
+    }
 }
-
-

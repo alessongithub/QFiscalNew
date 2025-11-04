@@ -108,7 +108,11 @@
         <table class="min-w-full text-sm">
             <thead>
             <tr class="text-left border-b">
+                @if(!request('has_boleto'))
                 <th class="py-2 w-8"><input type="checkbox" onclick="toggleAll(this)"></th>
+                @else
+                <th class="py-2 w-8"></th>
+                @endif
                 <th class="py-2">Descrição</th>
                 <th>Cliente</th>
                 <th>Vencimento</th>
@@ -130,8 +134,8 @@
                 @endphp
                 <tr class="border-b {{ $isOverdue ? 'bg-red-50' : ($isCanceled ? 'bg-gray-50' : ($isReversed ? 'bg-orange-50' : '')) }}">
                     <td class="py-2">
-                        @if(in_array($r->status, ['open','partial']))
-                        <input type="checkbox" name="ids[]" value="{{ $r->id }}">
+                        @if(!request('has_boleto') && in_array($r->status, ['open','partial']))
+                            <input type="checkbox" name="ids[]" value="{{ $r->id }}">
                         @endif
                     </td>
                     <td class="py-2">
@@ -197,7 +201,24 @@
                         <span class="px-2 py-1 rounded text-white text-xs {{ $statusClass }}">{{ $statusMap[$r->status] ?? $r->status }}</span>
                     </td>
                     <td class="text-right">
-                        <div class="inline-flex items-center gap-2">
+                    <div class="inline-flex items-center gap-2">
+                        @if(!empty($r->boleto_pdf_url) || !empty($r->boleto_url))
+                        <a href="{{ $r->boleto_pdf_url ?: $r->boleto_url }}" target="_blank" rel="noopener" title="Ver boleto" class="inline-flex items-center justify-center w-8 h-8 rounded bg-purple-50 hover:bg-purple-100 text-purple-700">
+                            <!-- Ícone estilo boleto -->
+                            <svg class="w-5 h-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                                <rect x="3" y="4" width="18" height="16" rx="2" ry="2"></rect>
+                                <line x1="6" y1="8" x2="12" y2="8"></line>
+                                <line x1="6" y1="11" x2="14" y2="11"></line>
+                                <line x1="6" y1="16" x2="6" y2="18"></line>
+                                <line x1="8" y1="16" x2="8" y2="18"></line>
+                                <line x1="9.5" y1="16" x2="9.5" y2="18"></line>
+                                <line x1="11" y1="16" x2="11" y2="18"></line>
+                                <line x1="13" y1="16" x2="13" y2="18"></line>
+                                <line x1="14.5" y1="16" x2="14.5" y2="18"></line>
+                                <line x1="16" y1="16" x2="16" y2="18"></line>
+                            </svg>
+                        </a>
+                        @endif
                             @if(auth()->user()->hasPermission('receivables.view'))
                             <a href="{{ route('receivables.show', $r) }}" title="Visualizar" class="inline-flex items-center justify-center w-8 h-8 rounded bg-gray-50 hover:bg-gray-100 text-gray-700">
                                 <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.477 0 8.268 2.943 9.542 7-1.274 4.057-5.065 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>
@@ -216,8 +237,9 @@
                                     $isFree = optional(auth()->user()->tenant?->plan)->slug === 'free';
                                     $boletoDisabled = ($lm || $isFree);
                                 @endphp
+                                @php $hasBoleto = !empty($r->boleto_url) || !empty($r->boleto_pdf_url); @endphp
                                 <button type="button"
-                                        title="Emitir boleto"
+                                        title="{{ $hasBoleto ? 'Reemitir boleto' : 'Emitir boleto' }}"
                                         class="inline-flex items-center justify-center w-8 h-8 rounded bg-purple-50 hover:bg-purple-100 text-purple-700 {{ $boletoDisabled ? 'opacity-60 cursor-not-allowed' : '' }}"
                                         data-id="{{ $r->id }}"
                                         data-due="{{ \Carbon\Carbon::parse($r->due_date)->toDateString() }}"
@@ -226,16 +248,19 @@
                                         data-action="{{ route('receivables.emit_boleto', $r) }}"
                                         {{ $boletoDisabled ? 'disabled' : '' }}
                                         onclick="{{ $boletoDisabled ? 'return false;' : 'openBoletoModal(this)' }}"
-                                        title="{{ $boletoDisabled ? 'Indisponível no seu plano' : 'Emitir boleto' }}">
+                                        title="{{ $boletoDisabled ? 'Indisponível no seu plano' : ($hasBoleto ? 'Reemitir boleto' : 'Emitir boleto') }}">
                                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 2h12a2 2 0 012 2v16a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2zm2 6h8m-8 4h8m-8 4h8"/></svg>
                                 </button>
                                 @if($boletoDisabled)
                                     <a href="{{ route('plans.upgrade') }}" class="text-xs text-green-700 hover:underline">Upgrade</a>
                                 @endif
-                                @if(!empty($r->boleto_url))
-                                    <a href="{{ $r->boleto_url }}" target="_blank" rel="noopener" title="Ver boleto" class="inline-flex items-center justify-center w-8 h-8 rounded bg-purple-50 hover:bg-purple-100 text-purple-700">
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 3v4a1 1 0 001 1h4M5 13l4 4L19 7"/></svg>
-                                    </a>
+                                @if($hasBoleto)
+                                    <form action="{{ route('receivables.email_boleto', $r) }}" method="POST" onsubmit="return confirm('Enviar boleto por e-mail ao cliente?');">
+                                        @csrf
+                                        <button class="inline-flex items-center justify-center w-8 h-8 rounded bg-indigo-50 hover:bg-indigo-100 text-indigo-700" title="Enviar boleto por e-mail">
+                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8m-18 8h18a2 2 0 002-2V8a2 2 0 00-2-2H3a2 2 0 00-2 2v6a2 2 0 002 2z"/></svg>
+                                        </button>
+                                    </form>
                                 @endif
                                 @endif
                                 @if($r->status !== 'paid' && auth()->user()->hasPermission('receivables.receive'))
@@ -275,13 +300,17 @@
 
         </table>
 
+        @if(!request('has_boleto'))
         <div class="mt-4 flex items-center justify-between">
             <div class="text-sm text-gray-600">Selecione títulos em aberto para baixa em lote.</div>
             <button type="button" onclick="openBulkModal()" class="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">Baixar selecionados</button>
         </div>
+        @endif
 
         <!-- Form dedicado para baixa em lote (inputs adicionados dinamicamente) -->
+        @if(!request('has_boleto'))
         <form id="bulkForm" method="POST" action="{{ route('receivables.bulk_receive') }}">@csrf</form>
+        @endif
 
         <div class="mt-4">{{ $receivables->links() }}</div>
 
@@ -294,16 +323,6 @@
                     <div class="md:col-span-2">
                         <label class="block text-xs text-gray-600">Vencimento</label>
                         <input id="boleto_due" type="date" name="due_date" class="w-full border rounded p-2" required>
-                    </div>
-                    <div>
-                        <label class="block text-xs text-gray-600">Multa (%)</label>
-                        <input id="boleto_fine" type="number" step="0.01" min="0" max="2" name="fine_percent" class="w-full border rounded p-2" placeholder="0">
-                        <div class="text-[11px] text-gray-500 mt-1">Até 2% conforme legislação.</div>
-                    </div>
-                    <div>
-                        <label class="block text-xs text-gray-600">Juros ao mês (%)</label>
-                        <input id="boleto_interest" type="number" step="0.01" min="0" max="1" name="interest_month_percent" class="w-full border rounded p-2" placeholder="0">
-                        <div class="text-[11px] text-gray-500 mt-1">Máx. 1% ao mês (~0,033% ao dia).</div>
                     </div>
                     <div class="md:col-span-2 flex items-center gap-2">
                         <input type="hidden" name="send_email" value="1">

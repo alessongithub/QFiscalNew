@@ -31,6 +31,9 @@ class SettingsController extends Controller
         ];
         $values = [];
         foreach ($defaults as $k=>$v) { $values[$k] = Setting::get($k, $v); }
+        // Para boleto, usar fallback global se não houver valor do tenant
+        $values['boleto.fine_percent'] = Setting::get('boleto.fine_percent', Setting::getGlobal('boleto.fine_percent', $values['boleto.fine_percent']));
+        $values['boleto.interest_month_percent'] = Setting::get('boleto.interest_month_percent', Setting::getGlobal('boleto.interest_month_percent', $values['boleto.interest_month_percent']));
 
         // Carrega/instancia config fiscal do tenant
         $tenant = $user->tenant;

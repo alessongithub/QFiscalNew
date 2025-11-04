@@ -224,3 +224,4 @@ Se é bug do Delphi 12 Update 1 com Windows 11:
 
 Este tipo de erro de versão incompatível entre units do sistema geralmente indica bug na versão do compilador, não problema resolvível apenas limpando cache.
 
+

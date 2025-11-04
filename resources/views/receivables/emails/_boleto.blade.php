@@ -11,7 +11,10 @@
     <p>Vencimento: <strong>{{ \Carbon\Carbon::parse($receivable->due_date)->format('d/m/Y') }}</strong></p>
     <p>Valor: <strong>R$ {{ number_format((float)$receivable->amount,2,',','.') }}</strong></p>
     <p>Qualquer dúvida estamos à disposição.</p>
-    <p>Atenciosamente,<br>{{ auth()->user()->tenant->trade_name ?? config('app.name') }}</p>
+    <p>
+        Atenciosamente,<br>
+        {{ optional($receivable->tenant)->fantasy_name ?? optional($receivable->tenant)->name ?? config('app.name') }}
+    </p>
 </div>
 
 

@@ -24,32 +24,63 @@
                             </a>
                         </div>
 
-                        <!-- Navigation Links -->
-                        <div class="hidden space-x-8 sm:-my-px sm:ml-10 sm:flex">
+                        <!-- Navigation Links (grouped) -->
+                        <div class="hidden sm:flex sm:items-center sm:ml-10 gap-4">
                             <x-nav-link :href="route('admin.dashboard')" :active="request()->routeIs('admin.dashboard')">
                                 Dashboard
                             </x-nav-link>
-                            <x-nav-link :href="route('admin.smtp-settings')" :active="request()->routeIs('admin.smtp-settings')">
-                                Config. SMTP
-                            </x-nav-link>
-                            <x-nav-link :href="route('admin.tenants')" :active="request()->routeIs('admin.tenants')">
-                                Tenants
-                            </x-nav-link>
-                            <x-nav-link :href="route('admin.payments')" :active="request()->routeIs('admin.payments')">
-                                Pagamentos
-                            </x-nav-link>
-                            <x-nav-link :href="route('admin.gateway.edit')" :active="request()->routeIs('admin.gateway.*')">
-                                Gateway
-                            </x-nav-link>
-                            <x-nav-link :href="route('admin.plans')" :active="request()->routeIs('admin.plans*')">
-                                Planos
-                            </x-nav-link>
-                            <x-nav-link :href="route('admin.news.index')" :active="request()->routeIs('admin.news*')">
-                                Novidades
-                            </x-nav-link>
-                            <x-nav-link :href="route('admin.ncm_rules.index')" :active="request()->routeIs('admin.ncm_rules*')">
-                                Regras NCM→GTIN
-                            </x-nav-link>
+
+                            <!-- Cadastros -->
+                            <x-dropdown align="left" width="60">
+                                <x-slot name="trigger">
+                                    <button class="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md text-gray-700 hover:text-gray-900">
+                                        Cadastros
+                                        <svg class="ml-1 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z"/></svg>
+                                    </button>
+                                </x-slot>
+                                <x-slot name="content">
+                                    <x-dropdown-link :href="route('admin.tenants')" :active="request()->routeIs('admin.tenants')">Tenants</x-dropdown-link>
+                                    <x-dropdown-link :href="route('admin.news.index')" :active="request()->routeIs('admin.news*')">Novidades</x-dropdown-link>
+                                    <x-dropdown-link :href="route('admin.ncm_rules.index')" :active="request()->routeIs('admin.ncm_rules*')">Regras NCM→GTIN</x-dropdown-link>
+                                </x-slot>
+                            </x-dropdown>
+
+                            <!-- Financeiro -->
+                            <x-dropdown align="left" width="60">
+                                <x-slot name="trigger">
+                                    <button class="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md text-gray-700 hover:text-gray-900">
+                                        Financeiro
+                                        <svg class="ml-1 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z"/></svg>
+                                    </button>
+                                </x-slot>
+                                <x-slot name="content">
+                                    <x-dropdown-link :href="route('admin.payments')" :active="request()->routeIs('admin.payments')">Pagamentos</x-dropdown-link>
+                                    <x-dropdown-link :href="route('admin.receivables')" :active="request()->routeIs('admin.receivables')">Boletos</x-dropdown-link>
+                                    <x-dropdown-link :href="route('admin.balances')" :active="request()->routeIs('admin.balances')">
+                                        Saldos
+                                        @php $__tb_req = \App\Models\TenantBalance::where('status','requested')->count(); @endphp
+                                        @if($__tb_req > 0)
+                                            <span class="ml-2 inline-flex items-center justify-center px-2 py-0.5 text-xs font-medium leading-4 rounded-full bg-red-100 text-red-800">{{ $__tb_req }}</span>
+                                        @endif
+                                    </x-dropdown-link>
+                                </x-slot>
+                            </x-dropdown>
+
+                            <!-- Configurações -->
+                            <x-dropdown align="left" width="60">
+                                <x-slot name="trigger">
+                                    <button class="inline-flex items-center px-3 py-2 text-sm font-medium rounded-md text-gray-700 hover:text-gray-900">
+                                        Configurações
+                                        <svg class="ml-1 h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M5.23 7.21a.75.75 0 011.06.02L10 10.94l3.71-3.71a.75.75 0 111.06 1.06l-4.24 4.24a.75.75 0 01-1.06 0L5.21 8.29a.75.75 0 01.02-1.08z"/></svg>
+                                    </button>
+                                </x-slot>
+                                <x-slot name="content">
+                                    <x-dropdown-link :href="route('admin.smtp-settings')" :active="request()->routeIs('admin.smtp-settings')">Config. SMTP</x-dropdown-link>
+                                    <x-dropdown-link :href="route('admin.gateway.edit')" :active="request()->routeIs('admin.gateway.*')">Gateway</x-dropdown-link>
+                                    <x-dropdown-link :href="route('admin.plans')" :active="request()->routeIs('admin.plans*')">Planos</x-dropdown-link>
+                                    <x-dropdown-link :href="route('admin.profile')" :active="request()->routeIs('admin.profile')">Perfil</x-dropdown-link>
+                                </x-slot>
+                            </x-dropdown>
                         </div>
                     </div>
 
@@ -68,8 +99,8 @@
                             </x-slot>
 
                             <x-slot name="content">
-                                <x-dropdown-link :href="route('profile.edit')">
-                                    {{ __('Profile') }}
+                                <x-dropdown-link :href="route('admin.profile')">
+                                    {{ __('Perfil do Admin') }}
                                 </x-dropdown-link>
 
                                 <!-- Authentication -->

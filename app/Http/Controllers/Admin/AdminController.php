@@ -10,8 +10,10 @@ use App\Models\Plan;
 use App\Models\Invoice;
 use App\Models\Payment;
 use App\Models\Partner;
+use App\Models\Receivable;
 use App\Models\Setting;
 use App\Models\TenantStorageUsage;
+use App\Models\TenantBalance;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
@@ -350,6 +352,90 @@ class AdminController extends Controller
         return view('admin.payments', compact('invoices', 'partners', 'summary'));
     }
 
+    public function receivables(Request $request)
+    {
+        $base = Receivable::with(['tenant','client'])
+            ->whereNotNull('boleto_mp_id');
+
+        // Filtros
+        $status = strtolower((string) $request->get('status', 'all')); // all|paid|pending|overdue
+        $tenantTerm = trim((string) $request->get('tenant', ''));
+        $partnerId = $request->get('partner_id');
+        $dateFrom = $request->get('date_from');
+        $dateTo = $request->get('date_to');
+
+        if ($tenantTerm !== '') {
+            $base->whereHas('tenant', function ($q) use ($tenantTerm) {
+                $q->where('name', 'like', "%{$tenantTerm}%")
+                  ->orWhere('fantasy_name', 'like', "%{$tenantTerm}%")
+                  ->orWhere('email', 'like', "%{$tenantTerm}%");
+            });
+        }
+
+        if (!empty($partnerId)) {
+            $pid = (int) $partnerId;
+            $base->whereHas('tenant', function ($q) use ($pid) {
+                $q->where('partner_id', $pid);
+            });
+        }
+
+        if (!empty($dateFrom)) {
+            $base->whereDate('due_date', '>=', $dateFrom);
+        }
+        if (!empty($dateTo)) {
+            $base->whereDate('due_date', '<=', $dateTo);
+        }
+
+        if ($status === 'paid') {
+            $base->where('status', 'paid');
+        } elseif ($status === 'pending') {
+            $base->whereIn('status', ['open','partial'])
+                 ->whereDate('due_date', '>=', now()->toDateString());
+        } elseif ($status === 'overdue') {
+            $base->whereIn('status', ['open','partial'])
+                 ->whereDate('due_date', '<', now()->toDateString());
+        }
+
+        // Paginação
+        $receivables = $base->orderByDesc('due_date')->paginate(20)->appends($request->query());
+
+        $partners = Partner::orderBy('name')->get(['id','name']);
+
+        return view('admin.receivables', compact('receivables','partners'));
+    }
+
+    public function balances(Request $request)
+    {
+        $base = TenantBalance::with(['tenant','receivable'])->orderByDesc('created_at');
+
+        // Filtros
+        $status = strtolower((string) $request->get('status', 'requested')); // requested|available|pending|transferred|all
+        $tenantTerm = trim((string) $request->get('tenant', ''));
+
+        if ($status !== '' && $status !== 'all') {
+            $base->where('status', $status);
+        }
+
+        if ($tenantTerm !== '') {
+            $term = $tenantTerm;
+            $base->whereHas('tenant', function ($q) use ($term) {
+                $q->where('name', 'like', "%{$term}%")
+                  ->orWhere('fantasy_name', 'like', "%{$term}%")
+                  ->orWhere('email', 'like', "%{$term}%");
+            });
+        }
+
+        $balances = $base->paginate(20)->appends($request->query());
+
+        // Sumário rápido
+        $summary = [
+            'requested_count' => TenantBalance::where('status','requested')->count(),
+            'requested_total' => (float) TenantBalance::where('status','requested')->sum('net_amount'),
+        ];
+
+        return view('admin.balances', compact('balances','summary','status','tenantTerm'));
+    }
+
     public function plans()
     {
         $plans = Plan::paginate(10);
@@ -591,5 +677,31 @@ class AdminController extends Controller
         ];
         
         return view('admin.storage-usage', compact('tenants', 'partners', 'stats'));
+    }
+
+    public function profile()
+    {
+        $adminEmail = Setting::getGlobal('admin.email', auth()->user()->email);
+        // Garantir persistência do e-mail de solicitação na primeira carga
+        $existingRequest = Setting::getGlobal('admin.request_email');
+        if ($existingRequest === null) {
+            Setting::setGlobal('admin.request_email', 'solicitacao@qfiscal.com.br');
+            $existingRequest = 'solicitacao@qfiscal.com.br';
+        }
+        $requestEmail = $existingRequest;
+        return view('admin.profile', compact('adminEmail','requestEmail'));
+    }
+
+    public function updateProfile(Request $request)
+    {
+        $validated = $request->validate([
+            'admin_email' => 'required|email',
+            'request_email' => 'required|email',
+        ]);
+
+        Setting::setGlobal('admin.email', $validated['admin_email']);
+        Setting::setGlobal('admin.request_email', $validated['request_email']);
+
+        return redirect()->route('admin.profile')->with('success', 'Perfil do admin atualizado.');
     }
 }

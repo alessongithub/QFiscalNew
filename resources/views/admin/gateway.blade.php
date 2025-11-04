@@ -56,6 +56,29 @@
                     </div>
                 </div>
 
+                <!-- Padrões Globais de Boleto (informativos para tenants) -->
+                <div class="border rounded p-4 space-y-4">
+                    <h3 class="text-sm font-medium text-gray-800">Padrões de Boleto (Globais)</h3>
+                    <p class="text-xs text-gray-600">Defina aqui os valores padrão de multa e juros para exibição aos tenants. A configuração real de multa/juros deve ser feita no painel do Mercado Pago.</p>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-xs mb-1">Multa padrão (%)</label>
+                            <input type="number" step="0.01" min="0" max="2" name="global_boleto_fine_percent" value="{{ old('global_boleto_fine_percent', $globalFine ?? '0') }}" class="w-full border rounded px-3 py-2">
+                            <p class="text-[11px] text-gray-500 mt-1">Máx. 2% (lei). Informativo.</p>
+                        </div>
+                        <div>
+                            <label class="block text-xs mb-1">Juros mensais (%)</label>
+                            <input type="number" step="0.01" min="0" max="1" name="global_boleto_interest_month_percent" value="{{ old('global_boleto_interest_month_percent', $globalInterest ?? '0') }}" class="w-full border rounded px-3 py-2">
+                            <p class="text-[11px] text-gray-500 mt-1">Máx. 1%/mês. Informativo.</p>
+                        </div>
+                        <div>
+                            <label class="block text-xs mb-1">Taxa fixa do boleto (R$) — Mercado Pago</label>
+                            <input type="number" step="0.01" min="0" max="50" name="global_boleto_mp_fee_fixed" value="{{ old('global_boleto_mp_fee_fixed', $globalBoletoMpFeeFixed ?? '1.99') }}" class="w-full border rounded px-3 py-2">
+                            <p class="text-[11px] text-gray-500 mt-1">Usada no cálculo do saldo quando o MP não informar as fees.</p>
+                        </div>
+                    </div>
+                </div>
+
                 <div>
                     <button class="px-4 py-2 bg-green-600 text-white rounded">Salvar</button>
                 </div>

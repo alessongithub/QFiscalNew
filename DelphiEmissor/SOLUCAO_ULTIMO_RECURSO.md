@@ -247,3 +247,4 @@ Este erro persistente pode indicar:
 
 **Recomendação:** Comece pela **SOLUÇÃO 1 (Reparar)** e **SOLUÇÃO 2 (Updates)**. Se não funcionar, considere reinstalação ou aguardar patch da Embarcadero.
 
+
