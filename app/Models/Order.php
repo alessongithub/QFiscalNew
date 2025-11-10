@@ -164,12 +164,12 @@ class Order extends Model
 
     /**
      * Verifica se pedido pode ser reaberto
-     * Bloqueia se há NFe transmitida ou se nfe_issued_at está preenchido
+     * Bloqueia se há NFe transmitida (autorizada)
      */
     public function canBeReopened(): bool
     {
-        // Usa o accessor hasSuccessfulNfe que já existe
-        if ($this->has_successful_nfe || !empty($this->nfe_issued_at)) {
+        // Usa o accessor hasSuccessfulNfe que verifica se há NF-e autorizada
+        if ($this->has_successful_nfe) {
             return false;
         }
         

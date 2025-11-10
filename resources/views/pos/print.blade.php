@@ -17,13 +17,22 @@
 </head>
 <body onload="printNow()">
     <div class="container">
+        @php $t = auth()->user()->tenant; @endphp
+        <div style="text-align:center; margin-bottom:8px;">
+            <div style="font-size:18px; font-weight:bold;">{{ $t->fantasy_name ?: $t->name }}</div>
+            <div class="muted">CNPJ: {{ $t->cnpj ?? '—' }}</div>
+            <div class="muted">
+                {{ ($t->address ?? '') }}{{ $t->number ? ', '.$t->number : '' }}{{ $t->neighborhood ? ' - '.$t->neighborhood : '' }}
+                {{ ($t->city ?? '') }} {{ $t->state ? '/'.$t->state : '' }} {{ $t->zip_code ? ' CEP '.$t->zip_code : '' }}
+            </div>
+            @if(!empty($t->phone))<div class="muted">Fone: {{ $t->phone }}</div>@endif
+        </div>
         <div style="display:flex; justify-content:space-between; align-items:start;">
             <div>
                 <h1>Pedido de Venda - PDV</h1>
                 <div class="muted">#{{ $order->id }} | {{ optional($order->created_at)->format('d/m/Y H:i') }}</div>
                 <div class="muted">Cliente: {{ optional($order->client)->name ?? '—' }}</div>
             </div>
-            <div><img src="http://localhost:8000/logo_transp.png" alt="logo" style="height:50px;"></div>
         </div>
 
         <table>
@@ -43,6 +52,70 @@
             </tbody>
         </table>
         <div class="right" style="margin-top:10px; font-size:16px;">Total: <strong>R$ {{ number_format($order->total_amount, 2, ',', '.') }}</strong></div>
+
+        @php
+            $receivables = \App\Models\Receivable::where('order_id', $order->id)
+                ->whereIn('status', ['paid', 'open', 'partial'])
+                ->orderBy('due_date')
+                ->get();
+            $paymentMethodLabels = [
+                'cash' => 'Dinheiro',
+                'card' => 'Cartão',
+                'pix' => 'PIX',
+                'boleto' => 'Boleto',
+                'transfer' => 'Transferência'
+            ];
+        @endphp
+
+        @if($receivables->count() > 0)
+            <div style="margin-top:15px; padding-top:10px; border-top:1px solid #ddd;">
+                <strong>Forma de Pagamento:</strong>
+                @php
+                    $groupedPayments = [];
+                    $cardInstallments = [];
+                    foreach($receivables as $rec) {
+                        $method = $rec->payment_method ?? 'cash';
+                        $methodLabel = $paymentMethodLabels[$method] ?? 'Dinheiro';
+                        
+                        // Detectar parcelas de cartão
+                        if ($method === 'card' && stripos($rec->description ?? '', 'Parcela') !== false) {
+                            // Extrair informação de parcela (ex: "Parcela 1/3")
+                            if (preg_match('/Parcela\s+(\d+)\/(\d+)/i', $rec->description ?? '', $matches)) {
+                                $currentParcel = (int)$matches[1];
+                                $totalParcels = (int)$matches[2];
+                                if (!isset($cardInstallments[$totalParcels])) {
+                                    $cardInstallments[$totalParcels] = [
+                                        'total' => 0,
+                                        'parcel_value' => $rec->amount,
+                                        'count' => 0
+                                    ];
+                                }
+                                $cardInstallments[$totalParcels]['total'] += $rec->amount;
+                                $cardInstallments[$totalParcels]['count']++;
+                            }
+                        } else {
+                            if (!isset($groupedPayments[$methodLabel])) {
+                                $groupedPayments[$methodLabel] = 0;
+                            }
+                            $groupedPayments[$methodLabel] += $rec->amount;
+                        }
+                    }
+                @endphp
+                @foreach($groupedPayments as $methodLabel => $total)
+                    <div style="margin-top:5px;">
+                        {{ $methodLabel }}: <strong>R$ {{ number_format($total, 2, ',', '.') }}</strong>
+                    </div>
+                @endforeach
+                @foreach($cardInstallments as $totalParcels => $installmentData)
+                    <div style="margin-top:5px;">
+                        Cartão ({{ $installmentData['count'] }}x): <strong>R$ {{ number_format($installmentData['total'], 2, ',', '.') }}</strong>
+                    </div>
+                    <div style="margin-top:2px; margin-left:15px; font-size:12px; color:#666;">
+                        {{ $totalParcels }}x de R$ {{ number_format($installmentData['parcel_value'], 2, ',', '.') }}
+                    </div>
+                @endforeach
+            </div>
+        @endif
 
         <div class="no-print" style="margin-top:12px;"><button onclick="window.print()">Imprimir</button></div>
     </div>

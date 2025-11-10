@@ -58,6 +58,11 @@ Route::middleware(['auth'])->group(function () {
     // Upgrade de plano
     Route::get('/plans/upgrade', [PlanUpgradeController::class, 'showUpgrade'])->name('plans.upgrade');
     Route::post('/plans/upgrade', [PlanUpgradeController::class, 'processUpgrade'])->name('plans.upgrade.process');
+
+    // Suporte
+    Route::get('/support', [App\Http\Controllers\SupportController::class, 'create'])->name('support.create');
+    Route::post('/support', [App\Http\Controllers\SupportController::class, 'store'])->name('support.store');
+    Route::get('/support/success', [App\Http\Controllers\SupportController::class, 'success'])->name('support.success');
 });
 
 // Rotas de checkout (apenas autenticado, sem exigir tenant ativo)
@@ -158,6 +163,7 @@ Route::middleware(['auth', \App\Http\Middleware\TenantMiddleware::class])->group
     Route::post('receivables/{receivable}/cancel', [ReceivableController::class, 'cancel'])->name('receivables.cancel');
     Route::post('receivables/bulk-receive', [ReceivableController::class, 'receiveBulk'])->name('receivables.bulk_receive');
     Route::post('receivables/{receivable}/emit-boleto', [ReceivableController::class, 'emitBoleto'])->name('receivables.emit_boleto');
+    Route::post('receivables/{receivable}/emit-pix', [ReceivableController::class, 'emitPix'])->name('receivables.emit_pix');
     Route::post('receivables/{receivable}/email-boleto', [ReceivableController::class, 'sendBoletoEmail'])->name('receivables.email_boleto');
     Route::get('test-mp', function() {
         $config = \App\Models\GatewayConfig::current();
@@ -316,6 +322,9 @@ Route::post('service_orders/{service_order}/extend-warranty', [ServiceOrderContr
     Route::get('/pos/{order}/receipt', [POSController::class, 'receipt'])->name('pos.receipt');
     Route::get('/pos/{order}/print', [POSController::class, 'printOrder'])->name('pos.print');
     Route::get('/pos/{order}/print-80', [POSController::class, 'printOrder80'])->name('pos.print80');
+    Route::get('/pos/pix/status/{payment}', [POSController::class, 'pixStatus'])->name('pos.pix.status');
+    Route::post('/pos/{order}/pay-pix', [POSController::class, 'payPix'])->name('pos.pay_pix');
+    Route::get('/pos/reopen/{order}', [POSController::class, 'reopen'])->name('pos.reopen');
 
     // Configurações gerais
     Route::get('/settings', [SettingsController::class, 'edit'])->name('settings.edit');
@@ -475,3 +484,4 @@ require __DIR__.'/auth.php';
 
 // Webhooks (público)
 Route::post('/webhooks/mercadopago', [\App\Http\Controllers\Webhooks\MercadoPagoWebhookController::class, 'handle'])->name('webhooks.mercadopago');
+Route::post('/webhooks/celcoin', [\App\Http\Controllers\Webhooks\CelcoinWebhookController::class, 'handle'])->name('webhooks.celcoin');

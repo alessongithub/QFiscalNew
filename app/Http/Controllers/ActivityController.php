@@ -283,7 +283,7 @@ class ActivityController extends Controller
                         'action' => $audit->action,
                         'action_label' => $labels[$audit->action] ?? ucfirst($audit->action),
                         'entity' => $audit->product,
-                        'entity_label' => $audit->product ? ($audit->product->name . ' (SKU: ' . ($audit->product->sku ?? '-') . ')') : 'Produto',
+                        'entity_label' => $audit->product ? ($audit->product->name . ' (Código: ' . ($audit->product->sku ?? '-') . ')') : 'Produto',
                         'notes' => $audit->details['note'] ?? null,
                         'changes' => [
                             'qty' => $audit->details['quantity'] ?? null,
@@ -447,7 +447,7 @@ class ActivityController extends Controller
                         'action' => $audit->action,
                         'action_label' => $labels[$audit->action] ?? ucfirst($audit->action),
                         'entity' => $audit->product,
-                        'entity_label' => $audit->product ? ($audit->product->name . ' (SKU: ' . ($audit->product->sku ?? '-') . ')') : 'Produto',
+                        'entity_label' => $audit->product ? ($audit->product->name . ' (Código: ' . ($audit->product->sku ?? '-') . ')') : 'Produto',
                         'notes' => $audit->notes,
                         'changes' => $audit->changes,
                         'created_at' => $audit->created_at,

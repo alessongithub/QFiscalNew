@@ -73,10 +73,12 @@
                         </thead>
                         <tbody>
                             @forelse($receiptsPaid as $r)
-                                <tr class="border-t">
+                                <tr class="border-t" @if((float)$r->amount < 0) style="background-color: #fef2f2;" @endif>
                                     <td class="p-2">{{ optional($r->client)->name ?? '-' }}</td>
                                     <td class="p-2">{{ $r->description }}</td>
-                                    <td class="p-2 text-right">R$ {{ number_format((float)$r->amount, 2, ',', '.') }}</td>
+                                    <td class="p-2 text-right @if((float)$r->amount < 0) text-red-600 font-semibold @endif">
+                                        R$ {{ number_format((float)$r->amount, 2, ',', '.') }}
+                                    </td>
                                 </tr>
                             @empty
                                 <tr><td colspan="3" class="p-3 text-gray-500">Sem recebimentos no dia.</td></tr>

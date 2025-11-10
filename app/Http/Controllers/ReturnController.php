@@ -95,7 +95,18 @@ class ReturnController extends Controller
             } catch (\Throwable $e) {}
         }
         
-        return view('returns.create', compact('order','items','already','hasIssuedNfe','nfeNote','nfeKey'));
+        // Verificar se há recebíveis de cartão/boleto para mostrar opção de cancelamento
+        $openReceivables = \App\Models\Receivable::where('tenant_id', $tenantId)
+            ->where('order_id', $order->id)
+            ->whereIn('status', ['open', 'partial'])
+            ->where('amount', '>', 0)
+            ->get();
+        
+        $hasNonModifiableInstallments = $openReceivables->contains(function($r) {
+            return in_array($r->payment_method, ['card', 'boleto']);
+        });
+        
+        return view('returns.create', compact('order','items','already','hasIssuedNfe','nfeNote','nfeKey','hasNonModifiableInstallments'));
     }
 
     public function store(Request $request)
@@ -106,6 +117,9 @@ class ReturnController extends Controller
             'order_id' => 'required|exists:orders,id',
             'refund_type' => 'nullable|in:refund',
             'refund_method' => 'nullable|in:cash,card,pix',
+            'cancel_full_order' => 'nullable|boolean', // Opção para cancelar venda inteira em devolução total
+            'cancel_nfe' => 'nullable|boolean', // Opção para cancelar NF-e original na SEFAZ em devolução total
+            'nfe_cancel_justification' => 'nullable|string|min:15|max:1000', // Justificativa para cancelamento de NF-e
             'items' => 'required|array',
             'items.*.order_item_id' => 'required|exists:order_items,id',
             'items.*.quantity' => 'nullable|numeric|min:0',
@@ -155,13 +169,12 @@ class ReturnController extends Controller
             StockMovement::create([
                 'tenant_id' => $tenantId,
                 'product_id' => $oi->product_id,
-                'type' => 'entry',
+                'movement_type' => 'in',
                 'quantity' => $qty,
                 'unit_price' => $unit,
-                'document' => 'Devolução Pedido #'.$order->id,
-                'note' => 'Devolução',
-                'reason' => 'Devolução de venda',
+                'reason' => 'return',
                 'user_id' => auth()->id(),
+                'notes' => 'Devolução de venda - Pedido #'.$order->id,
             ]);
         }
 
@@ -211,19 +224,140 @@ class ReturnController extends Controller
             ]);
         } catch (\Throwable $e) { }
 
-        // financeiro: Estorno imediato (MVP)
-        if ($totalRefund > 0) {
-                Receivable::create([
-                    'tenant_id' => $tenantId,
-                    'client_id' => $order->client_id,
-                    'order_id' => $order->id,
-                    'description' => 'Estorno Devolução Pedido '.$order->number,
-                    'amount' => -$totalRefund,
-                    'due_date' => now()->toDateString(),
-                    'status' => 'paid',
-                    'received_at' => now(),
-                    'payment_method' => $v['refund_method'] ?? 'cash',
-                ]);
+        // financeiro: Estorno imediato
+        if ($totalRefund > 0 && ($v['refund_type'] ?? null) === 'refund') {
+            // Buscar recebíveis do pedido
+            $paidReceivables = \App\Models\Receivable::where('tenant_id', $tenantId)
+                ->where('order_id', $order->id)
+                ->where('status', 'paid')
+                ->where('amount', '>', 0)
+                ->get();
+            
+            $openReceivables = \App\Models\Receivable::where('tenant_id', $tenantId)
+                ->where('order_id', $order->id)
+                ->whereIn('status', ['open', 'partial'])
+                ->where('amount', '>', 0)
+                ->get();
+            
+            $totalPaidAmount = $paidReceivables->sum('amount'); // Valor total recebido antecipadamente
+            $orderTotal = (float) $order->total_amount; // Valor total do pedido
+            
+            // Calcular proporção da devolução em relação ao pedido total
+            $refundProportion = $orderTotal > 0 ? ($totalRefund / $orderTotal) : 0;
+            
+            // Métodos não modificáveis (cartão parcelado e boleto)
+            $nonModifiableMethods = ['card', 'boleto'];
+            
+            // Verificar se há parcelas não modificáveis
+            $hasNonModifiableInstallments = $openReceivables->contains(function($r) use ($nonModifiableMethods) {
+                return in_array($r->payment_method, $nonModifiableMethods);
+            });
+            
+            // DECISÃO: Devolução parcial (< 95%) ou total (>= 95%)?
+            $isTotalReturn = $refundProportion >= 0.95;
+            $shouldCancelOrder = $isTotalReturn && ($v['cancel_full_order'] ?? false);
+            
+            if ($shouldCancelOrder) {
+                // DEVOLUÇÃO TOTAL: Cancelar venda inteira
+                // Estornar entrada do caixa
+                if ($totalPaidAmount > 0) {
+                    // Identificar método de pagamento da entrada (se houver)
+                    $entryReceivable = $paidReceivables->first(function($r) {
+                        return stripos($r->description ?? '', 'entrada') !== false;
+                    });
+                    
+                    $refundPaymentMethod = $entryReceivable 
+                        ? $entryReceivable->payment_method 
+                        : ($v['refund_method'] ?? ($paidReceivables->first()->payment_method ?? 'cash'));
+                    
+                    Receivable::create([
+                        'tenant_id' => $tenantId,
+                        'client_id' => $order->client_id,
+                        'order_id' => $order->id,
+                        'description' => '🔄 Estorno Devolução Total Pedido '.$order->number.' (Cancelamento)',
+                        'amount' => -$totalPaidAmount,
+                        'due_date' => now()->toDateString(),
+                        'status' => 'paid',
+                        'received_at' => now(),
+                        'payment_method' => $refundPaymentMethod,
+                    ]);
+                }
+                
+                // Cancelar parcelas/boletos em aberto (verificar se não foram pagos)
+                foreach ($openReceivables as $rec) {
+                    // Só cancela se não foi pago (status open/partial)
+                    if (in_array($rec->status, ['open', 'partial'])) {
+                        $rec->status = 'canceled';
+                        $rec->canceled_at = now();
+                        $rec->canceled_by = auth()->id();
+                        $rec->cancel_reason = 'Cancelamento por devolução total do pedido';
+                        $rec->save();
+                    }
+                }
+            } else {
+                // DEVOLUÇÃO PARCIAL ou TOTAL sem cancelar: Estornar do caixa
+                // Estornar valor real do item devolvido (não proporcional)
+                $amountToRefund = $totalRefund;
+                
+                if ($amountToRefund > 0) {
+                    // Priorizar estorno da entrada
+                    $entryReceivable = $paidReceivables->first(function($r) {
+                        return stripos($r->description ?? '', 'entrada') !== false;
+                    });
+                    
+                    $refundPaymentMethod = $v['refund_method'] ?? 'cash';
+                    
+                    if ($amountToRefund <= $totalPaidAmount) {
+                        // Estornar apenas do que foi recebido (entrada)
+                        Receivable::create([
+                            'tenant_id' => $tenantId,
+                            'client_id' => $order->client_id,
+                            'order_id' => $order->id,
+                            'description' => '🔄 Estorno Devolução Pedido '.$order->number,
+                            'amount' => -$amountToRefund,
+                            'due_date' => now()->toDateString(),
+                            'status' => 'paid',
+                            'received_at' => now(),
+                            'payment_method' => $refundPaymentMethod,
+                        ]);
+                    } else {
+                        // Estornar entrada + restante do caixa
+                        if ($totalPaidAmount > 0) {
+                            Receivable::create([
+                                'tenant_id' => $tenantId,
+                                'client_id' => $order->client_id,
+                                'order_id' => $order->id,
+                                'description' => '🔄 Estorno Devolução Pedido '.$order->number.' (Entrada)',
+                                'amount' => -$totalPaidAmount,
+                                'due_date' => now()->toDateString(),
+                                'status' => 'paid',
+                                'received_at' => now(),
+                                'payment_method' => $refundPaymentMethod,
+                            ]);
+                        }
+                        
+                        // Restante do caixa
+                        $remainingRefund = $amountToRefund - $totalPaidAmount;
+                        if ($remainingRefund > 0) {
+                            Receivable::create([
+                                'tenant_id' => $tenantId,
+                                'client_id' => $order->client_id,
+                                'order_id' => $order->id,
+                                'description' => '🔄 Estorno Devolução Pedido '.$order->number.' (Complemento)',
+                                'amount' => -$remainingRefund,
+                                'due_date' => now()->toDateString(),
+                                'status' => 'paid',
+                                'received_at' => now(),
+                                'payment_method' => $refundPaymentMethod,
+                            ]);
+                        }
+                    }
+                }
+                
+                // NUNCA mexer em parcelas de cartão/boleto em devolução parcial
+                // Parcelas permanecem intactas
+            }
+            
             // Atualizar saldo do caixa do dia
             try {
                 $dailyCash = \App\Models\DailyCash::where('tenant_id', $tenantId)
@@ -345,8 +479,185 @@ class ReturnController extends Controller
             }
         } catch (\Throwable $e) { /* ignore status update issues */ }
 
-        // Se solicitado, redireciona para emissão de NF-e de devolução do próprio pedido
-        if ($request->boolean('emitNfe', false)) {
+        // Calcular se é devolução total para cancelamento de NF-e
+        $orderTotal = (float) $order->total_amount;
+        $refundProportion = $orderTotal > 0 ? ($totalRefund / $orderTotal) : 0;
+        $isTotalReturn = $refundProportion >= 0.95;
+
+        // Cancelar NF-e original na SEFAZ se solicitado em devolução total
+        $shouldCancelNfe = $isTotalReturn && ($v['cancel_nfe'] ?? false);
+        if ($shouldCancelNfe) {
+            try {
+                $hasIssuedNfe = $order->has_successful_nfe;
+                if ($hasIssuedNfe) {
+                    $nfeNote = $order->latestNfeNoteCompat;
+                    if ($nfeNote) {
+                        // Verificar se pode cancelar (dentro de 24h, sem CC-e, etc.)
+                        $statusNorm = strtolower((string) $nfeNote->status);
+                        $hasProt = !empty($nfeNote->protocolo_autorizacao ?? $nfeNote->protocolo ?? null);
+                        
+                        if (in_array($statusNorm, ['emitted','transmitida'], true) && $hasProt) {
+                            // Verificar prazo de 24h
+                            $emitAt = $nfeNote->emitted_at ?: $nfeNote->data_emissao ?: null;
+                            $canCancel = true;
+                            $cancelError = null;
+                            
+                            if ($emitAt && now()->diffInHours($emitAt) > 24) {
+                                $canCancel = false;
+                                $cancelError = 'Cancelamento não permitido após 24 horas da autorização.';
+                            }
+                            
+                            // Verificar se já tem CC-e
+                            $hasCce = false;
+                            try { 
+                                $hasCce = is_array($nfeNote->response_received ?? null) && !empty(($nfeNote->response_received)['cce_response'] ?? null); 
+                            } catch (\Throwable $e) {}
+                            
+                            if ($hasCce || (string)$nfeNote->status === 'com_cc') {
+                                $canCancel = false;
+                                $cancelError = 'Esta NF-e possui Carta de Correção registrada. Cancelamento não permitido.';
+                            }
+                            
+                            if ($canCancel) {
+                                // Justificativa padrão se não fornecida
+                                $justification = $v['nfe_cancel_justification'] ?? 'Cancelamento por devolução total do pedido #' . $order->number;
+                                
+                                // Verificar permissão
+                                if (auth()->user()->hasPermission('nfe.cancel')) {
+                                    try {
+                                        $svc = app(\App\Services\NFeService::class);
+                                        $chave = $nfeNote->chave_acesso ?? null;
+                                        
+                                        if (!$chave) {
+                                            \Log::warning('NF-e sem chave de acesso para cancelamento', [
+                                                'nfe_id' => $nfeNote->id,
+                                                'order_id' => $order->id
+                                            ]);
+                                        } else {
+                                            // Preparar configurações extras
+                                            $extras = [];
+                                            try {
+                                                $emit = \App\Models\TenantEmitter::where('tenant_id', $tenantId)->first();
+                                                if ($emit) {
+                                                    $extras['ambiente'] = \App\Models\Setting::get('nfe.environment', \App\Models\Setting::getGlobal('services.delphi.environment', (config('app.env')==='production'?'producao':'homologacao')));
+                                                    $extras['configuracoes'] = [
+                                                        'path_schemas' => base_path('DelphiEmissor/Win32/Debug/Schemas/'),
+                                                        'path_xml' => base_path('DelphiEmissor/Win32/Debug/nfe/'),
+                                                    ];
+                                                }
+                                            } catch (\Throwable $e) {}
+                                            
+                                            // Buscar XML original se disponível
+                                            $xmlPath = null;
+                                            try {
+                                                if (!empty($nfeNote->xml_path)) {
+                                                    $xmlPath = $nfeNote->xml_path;
+                                                }
+                                            } catch (\Throwable $e) {}
+                                            
+                                            // Chamar serviço de cancelamento
+                                            $res = $svc->cancelarNFe($chave, $justification, $xmlPath, $extras);
+                                            
+                                            if ($res['success'] ?? false) {
+                                                // Processar resposta de sucesso
+                                                $payloadResp = $res['data'] ?? [];
+                                                $cStat = (string)($payloadResp['cStat'] ?? '');
+                                                $xMotivo = (string)($payloadResp['xMotivo'] ?? '');
+                                                
+                                                // Extrair cStat e xMotivo do XML se não vier no JSON
+                                                $xmlRet = (string)($payloadResp['xml_retorno'] ?? '');
+                                                if ($cStat === '' && $xmlRet !== '') {
+                                                    try {
+                                                        $sx = @simplexml_load_string($xmlRet);
+                                                        if ($sx !== false) {
+                                                            $sx->registerXPathNamespace('nfe', 'http://www.portalfiscal.inf.br/nfe');
+                                                            $c = $sx->xpath('//nfe:retEvento/nfe:infEvento/nfe:cStat');
+                                                            if (is_array($c) && isset($c[0])) { $cStat = (string)$c[0]; }
+                                                            $m = $sx->xpath('//nfe:retEvento/nfe:infEvento/nfe:xMotivo');
+                                                            if (is_array($m) && isset($m[0])) { $xMotivo = (string)$m[0]; }
+                                                        }
+                                                    } catch (\Throwable $e) {}
+                                                }
+                                                
+                                                // Apenas homologado (135) ou duplicidade (573) pode marcar como cancelada
+                                                if (in_array($cStat, ['135','573'], true)) {
+                                                    // Salvar XML de cancelamento se presente
+                                                    try {
+                                                        if ($xmlRet !== '') {
+                                                            $digits = preg_replace('/\D+/', '', (string)($chave ?: ($payloadResp['chave'] ?? '')));
+                                                            if ($digits !== '') {
+                                                                $dir = base_path('DelphiEmissor/Win32/Debug/nfe/');
+                                                                if (!is_dir($dir)) { @mkdir($dir, 0777, true); }
+                                                                $seq2 = (int)($payloadResp['sequencia'] ?? 1);
+                                                                $file = $dir . $digits . '-procEventoNFe-seq' . $seq2 . '.xml';
+                                                                @file_put_contents($file, $xmlRet);
+                                                                if (\Illuminate\Support\Facades\Schema::hasColumn('nfe_notes', 'cancel_xml_path')) { 
+                                                                    $nfeNote->cancel_xml_path = $file; 
+                                                                }
+                                                            }
+                                                        }
+                                                    } catch (\Throwable $e) {}
+                                                    
+                                                    // Atualiza status e histórico
+                                                    $nfeNote->status = 'cancelled';
+                                                    $nfeNote->cancelamento_justificativa = $justification;
+                                                    $nfeNote->cancelamento_data = now();
+                                                    try {
+                                                        $prev = (array)($nfeNote->response_received ?? []);
+                                                        $prev['cancel_response'] = $payloadResp;
+                                                        $nfeNote->response_received = $prev;
+                                                    } catch (\Throwable $e) {}
+                                                    $nfeNote->save();
+                                                    
+                                                    \Log::info('NF-e cancelada com sucesso na devolução total', [
+                                                        'nfe_id' => $nfeNote->id,
+                                                        'order_id' => $order->id,
+                                                        'cStat' => $cStat
+                                                    ]);
+                                                } else {
+                                                    \Log::warning('SEFAZ não confirmou cancelamento de NF-e na devolução', [
+                                                        'nfe_id' => $nfeNote->id,
+                                                        'order_id' => $order->id,
+                                                        'cStat' => $cStat,
+                                                        'xMotivo' => $xMotivo
+                                                    ]);
+                                                }
+                                            } else {
+                                                \Log::warning('Falha ao cancelar NF-e na devolução total', [
+                                                    'nfe_id' => $nfeNote->id,
+                                                    'order_id' => $order->id,
+                                                    'error' => $res['error'] ?? 'erro desconhecido'
+                                                ]);
+                                            }
+                                        }
+                                    } catch (\Throwable $e) {
+                                        \Log::warning('Erro ao cancelar NF-e na devolução total', [
+                                            'nfe_id' => $nfeNote->id ?? null,
+                                            'order_id' => $order->id,
+                                            'error' => $e->getMessage()
+                                        ]);
+                                    }
+                                }
+                            } else {
+                                \Log::warning('NF-e não pode ser cancelada na devolução total', [
+                                    'nfe_id' => $nfeNote->id,
+                                    'order_id' => $order->id,
+                                    'error' => $cancelError
+                                ]);
+                            }
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                \Log::warning('Erro ao processar cancelamento de NF-e na devolução', [
+                    'order_id' => $order->id,
+                    'error' => $e->getMessage()
+                ]);
+            }
+        }
+
+        // Se solicitado, redireciona para emissão de NF-e de devolução do próprio pedido (apenas para devoluções parciais)
+        if ($request->boolean('emitNfe', false) && !$isTotalReturn) {
             // Localiza chave da NFe emitida anteriormente para referenciar na devolução
             $refKey = optional(\App\Models\NfeNote::where('tenant_id', $tenantId)
                 ->where('numero_pedido', $order->number)
@@ -362,7 +673,12 @@ class ReturnController extends Controller
                 ->with('nfe_return_qty', $assignedQty);
         }
 
-        return redirect()->route('returns.index')->with('success','Devolução registrada.');
+        $successMessage = 'Devolução registrada.';
+        if ($shouldCancelNfe) {
+            $successMessage .= ' Cancelamento de NF-e processado.';
+        }
+        
+        return redirect()->route('returns.index')->with('success', $successMessage);
     }
 
     /**

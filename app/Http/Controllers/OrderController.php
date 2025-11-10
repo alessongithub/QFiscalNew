@@ -921,11 +921,12 @@ class OrderController extends Controller
                 \App\Models\StockMovement::create([
                     'tenant_id' => $order->tenant_id,
                     'product_id' => $item->product_id,
-                    'type' => 'entry',
+                    'movement_type' => 'in',
                     'quantity' => (float)$item->quantity,
                     'unit_price' => (float)$item->unit_price,
-                    'document' => 'Cancelamento Pedido #'.$order->number,
-                    'note' => 'Devolução de estoque por cancelamento de pedido',
+                    'reason' => 'order_cancellation',
+                    'user_id' => auth()->id(),
+                    'notes' => 'Devolução de estoque por cancelamento de pedido #'.$order->number,
                 ]);
             }
         }
@@ -938,28 +939,32 @@ class OrderController extends Controller
 
         foreach ($receivables as $rec) {
             if ($rec->status === 'paid') {
-                // Verificar se já foi estornado anteriormente
-                $alreadyRefunded = \App\Models\Payable::where('tenant_id', $order->tenant_id)
-                    ->where('description', 'like', '%Estorno de recebimento%')
-                    ->where('description', 'like', '%pedido #'.$order->number.'%')
-                    ->where('amount', (float)$rec->amount)
+                // Verificar se já foi estornado anteriormente (buscar por Receivable negativo do mesmo pedido)
+                $alreadyRefunded = \App\Models\Receivable::where('tenant_id', $order->tenant_id)
+                    ->where('order_id', $order->id)
+                    ->where('description', 'like', '%Estorno%')
+                    ->where('description', 'like', '%Pedido #'.$order->number.'%')
+                    ->where('amount', '<', 0)
                     ->exists();
                 
                 if (!$alreadyRefunded) {
-                    // Estornar valor total pago
-                    \App\Models\Payable::create([
+                    // Criar estorno como Receivable negativo com a mesma data do recebimento original
+                    // Isso compensa corretamente no caixa do dia original
+                    \App\Models\Receivable::create([
                         'tenant_id' => $order->tenant_id,
-                        'supplier_name' => 'Estorno Financeiro',
-                        'description' => '⚡ Estorno Automático - Cancelamento Pedido #'.$order->number,
+                        'client_id' => $rec->client_id,
+                        'order_id' => $order->id,
+                        'description' => '🔄 Estorno - Cancelamento Pedido #'.$order->number,
                         'amount' => -(float)$rec->amount,
-                        'due_date' => now()->toDateString(),
+                        'due_date' => $rec->received_at ? \Carbon\Carbon::parse($rec->received_at)->toDateString() : now()->toDateString(),
                         'status' => 'paid',
-                        'paid_at' => now(),
+                        'received_at' => $rec->received_at ?: now(),
                         'payment_method' => $rec->payment_method,
+                        'created_by' => auth()->id(),
                     ]);
                     $totalEstornado += (float)$rec->amount;
 
-                    // Taxa de antecipação para cartão
+                    // Taxa de antecipação para cartão (criar como Payable positivo)
                     $percent = (float) \App\Models\Setting::get('orders.cancel.card_anticipation_fee_percent', 0);
                     if (($rec->payment_method === 'card') && $percent > 0) {
                         $fee = round(((float)$rec->amount) * ($percent/100), 2);
@@ -969,9 +974,9 @@ class OrderController extends Controller
                                 'supplier_name' => 'Taxa de Antecipação (Estorno Cartão)',
                                 'description' => '⚡ Taxa Antecipação - Cancelamento Pedido #'.$order->number,
                                 'amount' => $fee,
-                                'due_date' => now()->toDateString(),
+                                'due_date' => $rec->received_at ? \Carbon\Carbon::parse($rec->received_at)->toDateString() : now()->toDateString(),
                                 'status' => 'paid',
-                                'paid_at' => now(),
+                                'paid_at' => $rec->received_at ?: now(),
                                 'payment_method' => 'card',
                             ]);
                             $taxaAntecipacao += $fee;
@@ -988,10 +993,14 @@ class OrderController extends Controller
             } else {
                 // Cancelar parcelas em aberto
                 $totalCancelado += (float)$rec->amount;
+                // Marcar apenas recebíveis em aberto como canceled
+                $rec->status = 'canceled';
+                $rec->save();
             }
             
-            $rec->status = 'canceled';
-            $rec->save();
+            // Recebíveis pagos NÃO são marcados como canceled
+            // Eles permanecem como 'paid' porque o estorno foi criado separadamente acima
+            // Isso mantém o histórico correto no caixa do dia
         }
 
         // 3) Marcar pedido como cancelado
@@ -1216,11 +1225,12 @@ class OrderController extends Controller
             \App\Models\StockMovement::create([
                 'tenant_id' => $order->tenant_id,
                 'product_id' => $product->id,
-                'type' => 'entry',
+                'movement_type' => 'in',
                 'quantity' => (float)$item->quantity,
                 'unit_price' => (float)$item->unit_price,
-                'document' => 'Reabertura Pedido #'.$order->number,
-                'note' => 'Retorno de estoque por remoção de item em pedido reaberto',
+                'reason' => 'order_item_removal',
+                'user_id' => auth()->id(),
+                'notes' => 'Retorno de estoque por remoção de item em pedido reaberto #'.$order->number,
             ]);
         }
         $item->delete();
@@ -1684,16 +1694,20 @@ class OrderController extends Controller
         if ($total >= 100) { $maxInstallments = 24; }
 
         if ($paymentType === 'immediate') {
-        Receivable::create([
-            'tenant_id'=>auth()->user()->tenant_id,
-            'client_id'=>$order->client_id,
-            'order_id'=>$order->id,
-            'description'=>sprintf('Pedido %s - pagamento à vista', $order->number),
+            $immediateMethodRaw = $data['immediate_method'] ?? $request->input('immediate_method', 'cash');
+            $immediateMethod = strtolower(trim((string) $immediateMethodRaw));
+            $isPix = ($immediateMethod === 'pix');
+            
+            Receivable::create([
+                'tenant_id'=>auth()->user()->tenant_id,
+                'client_id'=>$order->client_id,
+                'order_id'=>$order->id,
+                'description'=>sprintf('Pedido %s - pagamento à vista', $order->number),
                 'amount'=>$total,
                 'due_date'=>$today,
-                'status'=>'paid',
-                'received_at'=>now(),
-                'payment_method'=> $data['immediate_method'] ?? 'cash'
+                'status'=>$isPix ? 'open' : 'paid',
+                'received_at'=>$isPix ? null : now(),
+                'payment_method'=>$immediateMethod
             ]);
             $createdAny = true;
         } elseif ($paymentType === 'invoice') {
@@ -1833,11 +1847,12 @@ class OrderController extends Controller
                             \App\Models\StockMovement::create([
                                 'tenant_id' => auth()->user()->tenant_id,
                                 'product_id' => $it->product_id,
-                                'type' => 'exit',
+                                'movement_type' => 'out',
                                 'quantity' => (float) $it->quantity,
                                 'unit_price' => (float) $it->unit_price,
-                                'document' => 'Pedido #'.$order->number,
-                                'note' => 'Baixa por finalização de pedido',
+                                'reason' => 'order_fulfillment',
+                                'user_id' => auth()->id(),
+                                'notes' => 'Baixa por finalização de pedido #'.$order->number,
                             ]);
                         }
                     }
@@ -1889,20 +1904,80 @@ class OrderController extends Controller
                 'justification' => 'required|string|min:10|max:500',
             ]);
 
-            // Verificar se há recebíveis (mas não estornar - financeiro já foi tratado na devolução se houver)
+            // Verificar se usuário quer estornar financeiro (checkbox)
+            $shouldRefund = $request->boolean('estornar', false);
+            
+            $totalEstornado = 0;
+            $totalCancelado = 0;
+            
+            // Se usuário escolheu estornar financeiro
+            if ($shouldRefund) {
+                $receivables = \App\Models\Receivable::where('tenant_id', auth()->user()->tenant_id)
+                    ->where('order_id', $order->id)
+                    ->where('status', '!=', 'canceled')
+                    ->get();
+                
+                foreach ($receivables as $rec) {
+                    if ($rec->status === 'paid') {
+                        // Verificar se já foi estornado anteriormente
+                        $alreadyRefunded = \App\Models\Receivable::where('tenant_id', $order->tenant_id)
+                            ->where('order_id', $order->id)
+                            ->where('description', 'like', '%Estorno%')
+                            ->where('description', 'like', '%Reabertura Pedido #'.$order->number.'%')
+                            ->where('amount', '<', 0)
+                            ->exists();
+                        
+                        if (!$alreadyRefunded) {
+                            // Criar estorno como Receivable negativo
+                            \App\Models\Receivable::create([
+                                'tenant_id' => $order->tenant_id,
+                                'client_id' => $rec->client_id,
+                                'order_id' => $order->id,
+                                'description' => '🔄 Estorno - Reabertura Pedido #'.$order->number,
+                                'amount' => -(float)$rec->amount,
+                                'due_date' => $rec->received_at ? \Carbon\Carbon::parse($rec->received_at)->toDateString() : now()->toDateString(),
+                                'status' => 'paid',
+                                'received_at' => $rec->received_at ?: now(),
+                                'payment_method' => $rec->payment_method,
+                                'created_by' => auth()->id(),
+                            ]);
+                            $totalEstornado += (float)$rec->amount;
+                        }
+                    } else {
+                        // Cancelar parcelas em aberto
+                        $totalCancelado += (float)$rec->amount;
+                        $rec->status = 'canceled';
+                        $rec->save();
+                    }
+                }
+            }
+            
+            // Verificar se há recebíveis (para preservar financeiro se não estornou)
             $hasReceivables = \App\Models\Receivable::where('tenant_id', auth()->user()->tenant_id)
                 ->where('order_id', $order->id)
                 ->where('status','!=','canceled')
                 ->exists();
             
-            // Preservar financeiro existente
-            $order->reopen_preserve_financial = $hasReceivables;
+            // Preservar financeiro existente apenas se não estornou
+            $order->reopen_preserve_financial = $hasReceivables && !$shouldRefund;
+            $estornar = $shouldRefund;
+            
             // Usa método helper getItemsWithPartialReturns()
             $itemsWithReturns = $order->getItemsWithPartialReturns();
             $hasPartialReturns = $itemsWithReturns->isNotEmpty();
 
             $order->status = 'open';
             $order->save();
+            
+            // Atualizar saldo do caixa do dia se houve estorno
+            if ($shouldRefund && $totalEstornado > 0) {
+                try {
+                    $dailyCash = \App\Models\DailyCash::where('tenant_id', auth()->user()->tenant_id)
+                        ->whereDate('date', now()->toDateString())
+                        ->first();
+                    if ($dailyCash) { $dailyCash->updateCurrentBalance(); }
+                } catch (\Throwable $e) { /* ignore */ }
+            }
             
             // Log de atividade (se disponível)
             try {
@@ -1931,6 +2006,14 @@ class OrderController extends Controller
 
             // Preparar mensagem de sucesso com aviso sobre devoluções, se houver
             $successMsg = 'Pedido reaberto para edição.';
+            if ($shouldRefund) {
+                if ($totalEstornado > 0) {
+                    $successMsg .= ' Valor estornado: R$ ' . number_format($totalEstornado, 2, ',', '.');
+                }
+                if ($totalCancelado > 0) {
+                    $successMsg .= ' Parcelas canceladas: R$ ' . number_format($totalCancelado, 2, ',', '.');
+                }
+            }
             if ($hasPartialReturns && count($itemsWithReturns) > 0) {
                 $itemsList = collect($itemsWithReturns)->map(function($item) {
                     return "{$item['name']} ({$item['returned']} devolvido(s) de {$item['sold']})";
@@ -2561,11 +2644,12 @@ class OrderController extends Controller
                             \App\Models\StockMovement::create([
                                 'tenant_id' => auth()->user()->tenant_id,
                                 'product_id' => $oi->product_id,
-                                'type' => 'entry',
+                                'movement_type' => 'in',
                                 'quantity' => $qtyNum,
                                 'unit_price' => (float) $oi->unit_price,
-                                'document' => 'Devolução NF-e Pedido #'.$order->number,
-                                'note' => 'Entrada por devolução de venda',
+                                'reason' => 'nfe_return',
+                                'user_id' => auth()->id(),
+                                'notes' => 'Entrada por devolução de venda - NF-e Pedido #'.$order->number,
                             ]);
                         }
                     }

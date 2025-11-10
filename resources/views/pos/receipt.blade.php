@@ -17,6 +17,20 @@
  </head>
  <body onload="printNow()">
  <div class="container">
+    @php $t = auth()->user()->tenant; @endphp
+    <div style="text-align:center; margin-bottom:12px; border-bottom:1px solid #ddd; padding-bottom:8px;">
+        <div style="font-size:16px; font-weight:bold; margin-bottom:4px;">{{ $t->fantasy_name ?: $t->name }}</div>
+        @if($t->cnpj)
+        <div class="muted" style="font-size:11px;">CNPJ: {{ $t->cnpj }}</div>
+        @endif
+        <div class="muted" style="font-size:11px; margin-top:2px;">
+            {{ ($t->address ?? '') }}{{ $t->number ? ', '.$t->number : '' }}{{ $t->neighborhood ? ' - '.$t->neighborhood : '' }}
+            {{ ($t->city ?? '') }} {{ $t->state ? '/'.$t->state : '' }} {{ $t->zip_code ? ' CEP '.$t->zip_code : '' }}
+        </div>
+        @if(!empty($t->phone))
+        <div class="muted" style="font-size:11px; margin-top:2px;">Fone: {{ $t->phone }}</div>
+        @endif
+    </div>
     <h1>Recibo de Venda - PDV</h1>
     <div class="muted">Pedido #{{ $order->id }} | {{ optional($order->created_at)->format('d/m/Y H:i') }}</div>
     <div class="muted">Cliente: {{ optional($order->client)->name ?? '—' }}</div>

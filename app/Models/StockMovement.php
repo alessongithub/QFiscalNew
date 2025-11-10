@@ -15,6 +15,7 @@ class StockMovement extends Model
         'service_order_id',
         'movement_type',
         'quantity',
+        'unit_price',
         'reason',
         'user_id',
         'notes',

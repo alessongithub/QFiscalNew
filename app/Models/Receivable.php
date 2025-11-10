@@ -28,6 +28,10 @@ class Receivable extends Model
         'boleto_pdf_url',
         'boleto_barcode',
         'boleto_emitted_at',
+        'pix_mp_id',
+        'pix_qr_code',
+        'pix_qr_code_base64',
+        'pix_emitted_at',
         'created_by',
         'updated_by',
         'received_by',
@@ -44,6 +48,7 @@ class Receivable extends Model
         'due_date' => 'date',
         'received_at' => 'datetime',
         'boleto_emitted_at' => 'datetime',
+        'pix_emitted_at' => 'datetime',
         'reversed_at' => 'datetime',
         'canceled_at' => 'datetime',
     ];

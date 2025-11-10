@@ -120,7 +120,7 @@ function initStockAutocomplete(){
     }
 
     async function searchProducts(term){
-        const url = `/api/products/search?term=${encodeURIComponent(term)}`;
+        const url = `/api/products/search?term=${encodeURIComponent(term)}&for_stock=true`;
         const res = await fetch(url, { headers: { 'Accept': 'application/json' }});
         if (!res.ok) return [];
         return await res.json();

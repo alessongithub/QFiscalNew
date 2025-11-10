@@ -32,7 +32,36 @@
             </div>
         @endif
         
-        <form method="POST" action="{{ route('returns.store') }}" x-data="{ emitNfe: false }">
+        <form method="POST" action="{{ route('returns.store') }}" x-data="{
+            emitNfe: false,
+            cancelFullOrder: false,
+            cancelNfe: false,
+            totalRefund: 0,
+            orderTotal: {{ $order->total_amount ?? 0 }},
+            calculateRefund() {
+                let total = 0;
+                const inputs = document.querySelectorAll('input[name*=\'[quantity]\']');
+                inputs.forEach(input => {
+                    const qty = parseFloat(input.value) || 0;
+                    if (qty > 0) {
+                        const row = input.closest('tr');
+                        const priceCell = row.querySelector('td:last-child');
+                        if (priceCell) {
+                            const priceText = priceCell.textContent.trim();
+                            const unitPrice = parseFloat(priceText.replace(/[^\d,]/g, '').replace(',', '.')) || 0;
+                            total += qty * unitPrice;
+                        }
+                    }
+                });
+                this.totalRefund = Math.round(total * 100) / 100;
+            },
+            get refundProportion() {
+                return this.orderTotal > 0 ? (this.totalRefund / this.orderTotal) : 0;
+            },
+            get isTotalReturn() {
+                return this.refundProportion >= 0.95;
+            }
+        }" x-init="calculateRefund()">
             @csrf
             <input type="hidden" name="order_id" value="{{ $order->id }}">
             <div class="mb-3">
@@ -51,6 +80,45 @@
                             <option value="card">Cartão</option>
                             <option value="pix">PIX</option>
                         </select>
+                    </div>
+                    <div x-show="isTotalReturn" x-cloak class="mt-3 p-3 bg-blue-50 border border-blue-200 rounded-lg">
+                        <div class="text-sm font-semibold text-blue-900 mb-2">⚠️ Devolução Total Detectada (≥95%)</div>
+                        @if($hasNonModifiableInstallments ?? false)
+                        <div class="text-xs text-blue-800 mb-2">
+                            Este pedido possui parcelas de cartão/boleto que não podem ser modificadas.
+                        </div>
+                        @endif
+                        <label class="flex items-start gap-2 text-sm text-blue-900 mb-3">
+                            <input type="checkbox" name="cancel_full_order" x-model="cancelFullOrder" class="mt-1 rounded border-blue-300 text-blue-600 focus:ring-blue-500">
+                            <div>
+                                <div class="font-medium">Cancelar venda inteira</div>
+                                <div class="text-xs text-blue-700 mt-1">
+                                    Estornará a entrada e cancelará todas as parcelas/títulos em aberto. 
+                                    <strong>Recomendado para devoluções totais.</strong>
+                                </div>
+                            </div>
+                        </label>
+                        @if($hasIssuedNfe ?? false)
+                        <div class="mt-3 pt-3 border-t border-blue-300">
+                            <label class="flex items-start gap-2 text-sm text-blue-900">
+                                <input type="checkbox" name="cancel_nfe" x-model="cancelNfe" class="mt-1 rounded border-blue-300 text-blue-600 focus:ring-blue-500">
+                                <div>
+                                    <div class="font-medium">Cancelar NF-e original na SEFAZ</div>
+                                    <div class="text-xs text-blue-700 mt-1">
+                                        Cancela a NF-e transmitida na SEFAZ. <strong>Recomendado para devoluções totais.</strong>
+                                        <br><span class="text-red-600">⚠️ Apenas se a NF-e foi emitida há menos de 24 horas e não possui Carta de Correção.</span>
+                                    </div>
+                                </div>
+                            </label>
+                            <div x-show="cancelNfe" class="mt-2">
+                                <label class="block text-xs text-gray-600 mb-1">Justificativa do cancelamento (mín. 15 caracteres)</label>
+                                <textarea name="nfe_cancel_justification" rows="2" class="w-full border border-gray-300 rounded px-2 py-1 text-sm" placeholder="Ex: Cancelamento por devolução total do pedido #{{ $order->number }}">Cancelamento por devolução total do pedido #{{ $order->number }}</textarea>
+                            </div>
+                        </div>
+                        @endif
+                        <div x-show="!cancelFullOrder" class="mt-2 text-xs text-blue-700 italic">
+                            Se não marcar, o sistema estornará tudo do caixa mantendo as parcelas/títulos intactos.
+                        </div>
                     </div>
                 </div>
             </div>
@@ -76,6 +144,7 @@
                                    max="{{ $max }}"
                                    step="{{ $step }}"
                                    class="border rounded px-2 py-1 w-32"
+                                   x-on:input="calculateRefund()"
                                    @if($isIntegerUnit) inputmode="numeric" @endif>
                         </td>
                         <td class="py-2 px-2 right">R$ {{ number_format($it->unit_price,2,',','.') }}</td>

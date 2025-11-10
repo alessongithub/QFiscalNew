@@ -387,6 +387,16 @@
         @php
             $tenant = auth()->user()->tenant;
             $nextDue = $tenant?->plan_expires_at ? \Carbon\Carbon::parse($tenant->plan_expires_at) : null;
+            if (!$nextDue && $tenant) {
+                try {
+                    if (\Illuminate\Support\Facades\Schema::hasTable('subscriptions') && \Illuminate\Support\Facades\Schema::hasColumn('subscriptions','current_period_end')) {
+                        $fallback = \App\Models\Subscription::where('tenant_id', $tenant->id)
+                            ->orderByDesc('current_period_end')
+                            ->value('current_period_end');
+                        $nextDue = $fallback ? \Carbon\Carbon::parse($fallback) : null;
+                    }
+                } catch (\Throwable $e) { /* ignore */ }
+            }
             $days = $nextDue ? (int) now()->startOfDay()->diffInDays($nextDue, false) : null;
         @endphp
         <div class="flex flex-wrap items-center gap-4">

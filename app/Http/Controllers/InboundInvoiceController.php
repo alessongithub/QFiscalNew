@@ -197,21 +197,20 @@ class InboundInvoiceController extends Controller
                         $mov = \App\Models\StockMovement::create([
                             'tenant_id' => $tenantId,
                             'product_id' => $pid,
-                            'type' => 'entry',
+                            'movement_type' => 'in',
                             'quantity' => $it->quantity,
                             'unit_price' => $it->unit_price,
-                            'document' => 'NFe '.$inbound->number.'/'.$inbound->series,
-                            'note' => 'Entrada adicional via XML (já vinculado)',
-                            'reason' => 'Entrada NFe (adicional)',
+                            'reason' => 'inbound_invoice_additional',
                             'user_id' => auth()->id(),
+                            'notes' => 'Entrada adicional via XML (já vinculado) - NFe '.$inbound->number.'/'.$inbound->series,
                         ]);
                         continue;
                     }
                     // custo médio para produto existente
                     $product = Product::where('tenant_id',$tenantId)->find($pid);
                     if ($product) {
-                        $prevQty = (float) \App\Models\StockMovement::where('tenant_id',$tenantId)->where('product_id',$product->id)->whereIn('type',["entry","adjustment"]) ->sum('quantity')
-                                     - (float) \App\Models\StockMovement::where('tenant_id',$tenantId)->where('product_id',$product->id)->where('type','exit')->sum('quantity');
+                        $prevQty = (float) \App\Models\StockMovement::where('tenant_id',$tenantId)->where('product_id',$product->id)->whereIn('movement_type',["in","adjustment"]) ->sum('quantity')
+                                     - (float) \App\Models\StockMovement::where('tenant_id',$tenantId)->where('product_id',$product->id)->where('movement_type','out')->sum('quantity');
                         $prevCost = (float) ($product->avg_cost ?? 0);
                         $newQty = (float) $it->quantity;
                         $newCost = (float) $it->unit_price;
@@ -222,13 +221,12 @@ class InboundInvoiceController extends Controller
                 $movement = \App\Models\StockMovement::create([
                     'tenant_id' => $tenantId,
                     'product_id' => $pid,
-                    'type' => 'entry',
+                    'movement_type' => 'in',
                     'quantity' => $it->quantity,
                     'unit_price' => $it->unit_price,
-                    'document' => 'NFe '.$inbound->number.'/'.$inbound->series,
-                    'note' => 'Entrada via XML',
-                    'reason' => 'Entrada NFe',
+                    'reason' => 'inbound_invoice',
                     'user_id' => auth()->id(),
+                    'notes' => 'Entrada via XML - NFe '.$inbound->number.'/'.$inbound->series,
                 ]);
                 // marcar item como vinculado
                 $it->update([
@@ -282,13 +280,12 @@ class InboundInvoiceController extends Controller
                 \App\Models\StockMovement::create([
                     'tenant_id' => $tenantId,
                     'product_id' => $new->id,
-                    'type' => 'entry',
+                    'movement_type' => 'in',
                     'quantity' => $it->quantity,
                     'unit_price' => $it->unit_price,
-                    'document' => 'NFe '.$inbound->number.'/'.$inbound->series,
-                    'note' => 'Entrada via XML (novo produto)',
-                    'reason' => 'Entrada NFe (novo produto)',
+                    'reason' => 'inbound_invoice_new_product',
                     'user_id' => auth()->id(),
+                    'notes' => 'Entrada via XML (novo produto) - NFe '.$inbound->number.'/'.$inbound->series,
                 ]);
                 
                 // Registrar crédito fiscal se houver ICMS
@@ -381,13 +378,12 @@ class InboundInvoiceController extends Controller
             \App\Models\StockMovement::create([
                 'tenant_id' => $tenantId,
                 'product_id' => (int)$item->linked_product_id,
-                'type' => 'exit',
+                'movement_type' => 'out',
                 'quantity' => $item->quantity,
                 'unit_price' => $item->unit_price,
-                'document' => 'Estorno vinculação NFe '.$inbound->number.'/'.$inbound->series,
-                'note' => 'Estorno de entrada via desvinculação',
-                'reason' => 'Estorno NFe (desvincular)',
+                'reason' => 'inbound_invoice_unlink',
                 'user_id' => auth()->id(),
+                'notes' => 'Estorno de entrada via desvinculação - NFe '.$inbound->number.'/'.$inbound->series,
             ]);
         }
         $item->update([

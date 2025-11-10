@@ -16,6 +16,9 @@ class SettingsController extends Controller
             'ui.theme' => 'light', // light|dark
             'print.default' => 'a4', // a4|80mm
             'print.footer' => '',
+            'print.printer_type' => 'thermal_80', // thermal_58|thermal_80|system
+            'print.ticket_columns' => '42', // número de colunas do cupom
+            'pos.auto_print_on_payment' => '0',
             'pos.require_client' => '0',
             'pos.block_without_stock' => '1',
             'stock.allow_negative' => '0',
@@ -60,6 +63,9 @@ class SettingsController extends Controller
             'ui.theme' => $request->input('ui.theme', $request->input('ui.theme', 'light')),
             'print.default' => $request->input('print.default', 'a4'),
             'print.footer' => $request->input('print.footer', ''),
+            'print.printer_type' => $request->input('print.printer_type', 'thermal_80'),
+            'print.ticket_columns' => $request->input('print.ticket_columns', '42'),
+            'pos.auto_print_on_payment' => $request->input('pos.auto_print_on_payment', '0'),
             'pos.require_client' => $request->input('pos.require_client', '0'),
             'pos.block_without_stock' => $request->input('pos.block_without_stock', '1'),
             'stock.allow_negative' => $request->input('stock.allow_negative', '0'),
@@ -74,8 +80,11 @@ class SettingsController extends Controller
         if (isset($groups['ui']['theme'])) { $flat['ui.theme'] = $groups['ui']['theme']; }
         if (isset($groups['print']['default'])) { $flat['print.default'] = $groups['print']['default']; }
         if (isset($groups['print']['footer'])) { $flat['print.footer'] = $groups['print']['footer']; }
+        if (isset($groups['print']['printer_type'])) { $flat['print.printer_type'] = $groups['print']['printer_type']; }
+        if (isset($groups['print']['ticket_columns'])) { $flat['print.ticket_columns'] = $groups['print']['ticket_columns']; }
         if (isset($groups['pos']['require_client'])) { $flat['pos.require_client'] = $groups['pos']['require_client']; }
         if (isset($groups['pos']['block_without_stock'])) { $flat['pos.block_without_stock'] = $groups['pos']['block_without_stock']; }
+        if (isset($groups['pos']['auto_print_on_payment'])) { $flat['pos.auto_print_on_payment'] = $groups['pos']['auto_print_on_payment']; }
         if (isset($groups['stock']['allow_negative'])) { $flat['stock.allow_negative'] = $groups['stock']['allow_negative']; }
         if (isset($groups['service_orders']['default_warranty_days'])) { $flat['service_orders.default_warranty_days'] = $groups['service_orders']['default_warranty_days']; }
         if (isset($groups['pos']['default_cash_method'])) { $flat['pos.default_cash_method'] = $groups['pos']['default_cash_method']; }
@@ -90,6 +99,9 @@ class SettingsController extends Controller
                 'ui.theme' => 'required|in:light,dark',
                 'print.default' => 'required|in:a4,80mm',
                 'print.footer' => 'nullable|string|max:200',
+                'print.printer_type' => 'required|in:thermal_58,thermal_80,system',
+                'print.ticket_columns' => 'required|integer|min:16|max:64',
+                'pos.auto_print_on_payment' => 'required|in:0,1',
                 'pos.require_client' => 'required|in:0,1',
                 'pos.block_without_stock' => 'required|in:0,1',
                 'stock.allow_negative' => 'required|in:0,1',

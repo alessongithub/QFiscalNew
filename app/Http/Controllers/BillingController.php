@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Payment;
+use App\Models\SubscriptionPayment;
 use Illuminate\Http\Request;
 
 class BillingController extends Controller
@@ -18,7 +19,12 @@ class BillingController extends Controller
             ->orderByDesc('paid_at')
             ->paginate(15);
 
-        return view('billing.invoices.index', compact('payments'));
+        $subscriptionPayments = SubscriptionPayment::where('tenant_id', $tenant->id)
+            ->orderByDesc('paid_at')
+            ->orderByDesc('created_at')
+            ->paginate(15, ['*'], 'subs_page');
+
+        return view('billing.invoices.index', compact('payments','subscriptionPayments'));
     }
 }
 

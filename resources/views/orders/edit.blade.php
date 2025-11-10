@@ -274,6 +274,12 @@
                     <label class="block text-sm font-medium text-gray-700 mb-1">Justificativa</label>
                     <textarea name="justification" class="w-full border rounded p-2 text-sm" required minlength="10" maxlength="500" placeholder="Descreva o motivo da reabertura"></textarea>
                                         </div>
+                <div class="mb-4">
+                    <label class="inline-flex items-center">
+                        <input type="checkbox" name="estornar" value="1" class="mr-2">
+                        <span class="text-sm text-gray-700">Estornar financeiro deste pedido agora</span>
+                    </label>
+                </div>
                 <div class="flex justify-end space-x-2 mt-4">
                     <button type="button" class="px-4 py-2 border border-gray-300 rounded text-sm font-medium text-gray-700 hover:bg-gray-50" onclick="document.getElementById('reopenModalDetail').classList.add('hidden'); document.getElementById('reopenModalDetail').classList.remove('flex');">Cancelar</button>
                     <button type="submit" class="px-4 py-2 bg-amber-600 text-white rounded text-sm font-medium hover:bg-amber-700">Reabrir</button>
@@ -441,21 +447,7 @@
                     </select>
                 </div>
                 
-                <div>
-                    <label class="block text-sm font-medium text-gray-700 mb-2">
-                        <span class="flex items-center">
-                            <svg class="w-4 h-4 mr-2 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1"/>
-                            </svg>
-                            Desconto Total (R$)
-                        </span>
-                    </label>
-                    <input type="number" step="0.01" min="0" name="discount_total_override" 
-                           class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-colors text-right"
-                           value="{{ number_format((float)($order->discount_total ?? 0), 2, '.', '') }}"
-                           placeholder="0,00"
-                           @input="document.getElementById('discount_total_override_inline').value = $event.target.value; document.getElementById('discount_total_override_inline').dispatchEvent(new Event('input'));">
-                </div>
+                
 
             </fieldset>
             @if($isConsumerFinal)

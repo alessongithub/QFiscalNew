@@ -62,6 +62,10 @@
                 <input type="date" name="date_to" value="{{ $dateTo ?? '' }}" class="w-full border rounded p-2">
             </div>
             <div class="md:col-span-3">
+                <label class="block text-xs text-gray-600">Número do Pedido</label>
+                <input type="text" name="order_number" value="{{ $orderNumber ?? '' }}" placeholder="Ex: 123" class="w-full border rounded p-2">
+            </div>
+            <div class="md:col-span-3">
                 <label class="block text-xs text-gray-600">Ordenar por</label>
                 <select name="sort" class="w-full border rounded p-2 min-w-[200px]">
                     <option value="due_date" @selected((request('sort','due_date')==='due_date'))>Vencimento</option>
@@ -262,6 +266,29 @@
                                         </button>
                                     </form>
                                 @endif
+                                @php $hasPix = !empty($r->pix_qr_code); @endphp
+                                @if($hasPix)
+                                    <button type="button" 
+                                            class="inline-flex items-center justify-center w-8 h-8 rounded bg-blue-50 hover:bg-blue-100 text-blue-700 view-pix-btn"
+                                            data-pix-qr-code="{{ htmlspecialchars($r->pix_qr_code, ENT_QUOTES, 'UTF-8') }}"
+                                            data-pix-qr-code-base64="{{ htmlspecialchars($r->pix_qr_code_base64 ?? '', ENT_QUOTES, 'UTF-8') }}"
+                                            data-pix-amount="{{ $r->amount }}"
+                                            data-pix-description="{{ htmlspecialchars($r->description ?? '', ENT_QUOTES, 'UTF-8') }}"
+                                            data-pix-client-name="{{ htmlspecialchars(optional($r->client)->name ?? 'Cliente', ENT_QUOTES, 'UTF-8') }}"
+                                            data-pix-client-phone="{{ preg_replace('/\D/', '', optional($r->client)->phone ?? '') }}"
+                                            title="Ver PIX">
+                                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M3 3h8v8H3V3zm2 2v4h4V5H5zM3 13h8v8H3v-8zm2 2v4h4v-4H5zM13 3h8v8h-8V3zm2 2v4h4V5h-4zM15 15h2v2h-2v-2zm4 0h2v2h-2v-2zm-4 4h2v2h-2v-2zm4 0h2v2h-2v-2z"/></svg>
+                                    </button>
+                                @else
+                                    <form action="{{ route('receivables.emit_pix', $r) }}" method="POST" class="inline">
+                                        @csrf
+                                        <button type="submit" 
+                                                title="Emitir PIX"
+                                                class="inline-flex items-center justify-center w-8 h-8 rounded bg-blue-50 hover:bg-blue-100 text-blue-700">
+                                            <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M3 3h8v8H3V3zm2 2v4h4V5H5zM3 13h8v8H3v-8zm2 2v4h4v-4H5zM13 3h8v8h-8V3zm2 2v4h4V5h-4zM15 15h2v2h-2v-2zm4 0h2v2h-2v-2zm-4 4h2v2h-2v-2zm4 0h2v2h-2v-2z"/></svg>
+                                        </button>
+                                    </form>
+                                @endif
                                 @endif
                                 @if($r->status !== 'paid' && auth()->user()->hasPermission('receivables.receive'))
                                 <button type="button"
@@ -336,6 +363,57 @@
                 </form>
             </div>
         </x-modal>
+
+        <!-- Modal PIX -->
+        <div id="pix-modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black bg-opacity-50" style="display: none;">
+            <div class="bg-white rounded-lg shadow-xl max-w-md w-full mx-4 relative">
+                <div class="p-6">
+                    <div class="flex justify-between items-center mb-4">
+                        <h3 class="text-lg font-semibold text-gray-900">PIX - Código de Pagamento</h3>
+                        <button type="button" onclick="closePixModal()" class="text-gray-400 hover:text-gray-600">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                            </svg>
+                        </button>
+                    </div>
+                    
+                    <div id="pix-content" class="text-center">
+                        <div id="pix-loading" class="py-8">
+                            <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto"></div>
+                            <p class="mt-4 text-gray-600">Gerando código PIX...</p>
+                        </div>
+                        
+                        <div id="pix-qr" class="hidden">
+                            <div class="mb-4">
+                                <div class="text-sm text-gray-600 mb-2">Valor: <span id="pix-amount" class="font-semibold text-gray-900"></span></div>
+                                <div class="text-sm text-gray-600 mb-4">Cliente: <span id="pix-client" class="font-semibold text-gray-900"></span></div>
+                            </div>
+                            <div class="flex justify-center mb-4">
+                                <img id="pix-qr-image" src="" alt="QR Code PIX" class="w-64 h-64 border-2 border-gray-200 rounded-lg shadow">
+                            </div>
+                            <div class="mb-4">
+                                <label class="block text-xs text-gray-600 mb-2">Código PIX (Copiar e Colar)</label>
+                                <textarea id="pix-code" readonly class="w-full h-24 p-3 border rounded-lg text-xs font-mono bg-gray-50"></textarea>
+                                <button onclick="copyPixCode()" class="mt-2 w-full px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg text-sm">
+                                    Copiar Código
+                                </button>
+                            </div>
+                            <div class="flex gap-2">
+                                <button onclick="sendPixWhatsApp()" class="flex-1 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-sm font-semibold flex items-center justify-center">
+                                    <svg class="w-5 h-5 mr-2" fill="currentColor" viewBox="0 0 24 24">
+                                        <path d="M17.472 14.382c-.297-.149-1.758-1.867-2.03-2.085-.239-.192-.413-.229-.573-.232-.163-.003-.353-.024-.539-.038-.263-.024-.487-.015-.699.15-.212.164-.82.803-1.006.97-.186.166-.374.186-.62.061-.248-.124-1.046-.386-1.992-1.23-1.737-1.478-2.91-3.377-3.235-3.95-.323-.57-.027-.879.242-1.163.266-.281.592-.73.888-1.095.305-.375.407-.632.61-.632.201 0 .323.024.415.123.093.098.32.32.44.43.12.11.243.229.105.434-.137.205-.206.328-.29.447-.083.117-.17.132-.31.043-.139-.09-.587-.217-1.125-.347-.428-.103-.739-.156-1.002-.15-.264.005-.682.06-1.037.284-.354.224-.61.548-.797.92-.188.374-.144.9.107 1.383.756 1.45 2.567 3.78 5.5 5.37 1.16.627 2.064 1.01 2.766 1.293.383.154.73.263 1.006.336.448.12.857.103 1.18-.07.324-.173.683-.51 1.083-.852.43-.376.9-.785 1.19-1.006.29-.22.48-.33.61-.26.129.067.82 3.88 1.152 5.318.064.276.143.51.235.702.092.19.192.35.297.47.105.122.22.188.337.188.117 0 .266-.074.41-.23.144-.157 1.01-1.003 1.4-1.38.39-.378.656-.64.77-.775.115-.135.189-.225.115-.426-.073-.2-.308-.39-.624-.63z"/>
+                                    </svg>
+                                    Enviar via WhatsApp
+                                </button>
+                                <button onclick="closePixModal()" class="flex-1 px-4 py-2 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg text-sm">
+                                    Fechar
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
 
         <!-- Modal de Baixa -->
         <x-modal name="receive-modal" maxWidth="md">
@@ -658,6 +736,208 @@
             window.dispatchEvent(new CustomEvent('open-modal', { detail: 'boleto-modal' }));
         }catch(e){ console.error(e); }
     }
+    </script>
+
+    <script>
+    // Funções PIX - disponíveis globalmente
+    window.showPixModal = function(pixData) {
+        const modal = document.getElementById('pix-modal');
+        const loading = document.getElementById('pix-loading');
+        const qr = document.getElementById('pix-qr');
+        const qrImage = document.getElementById('pix-qr-image');
+        const qrCode = document.getElementById('pix-code');
+        const amount = document.getElementById('pix-amount');
+        const client = document.getElementById('pix-client');
+        
+        if (!modal) return;
+        
+        // Armazenar dados para WhatsApp
+        window.pixData = pixData;
+        
+        // Mostrar loading
+        loading.classList.remove('hidden');
+        qr.classList.add('hidden');
+        modal.classList.remove('hidden');
+        modal.style.display = 'flex';
+        
+        // Simular loading breve
+        setTimeout(() => {
+            if (pixData.qr_code_base64) {
+                qrImage.src = 'data:image/png;base64,' + pixData.qr_code_base64;
+            }
+            qrCode.value = pixData.qr_code || '';
+            amount.textContent = 'R$ ' + parseFloat(pixData.amount || 0).toFixed(2).replace('.', ',');
+            client.textContent = pixData.client_name || 'Cliente';
+            
+            loading.classList.add('hidden');
+            qr.classList.remove('hidden');
+        }, 500);
+    };
+    
+    window.closePixModal = function() {
+        const modal = document.getElementById('pix-modal');
+        if (modal) {
+            modal.classList.add('hidden');
+            modal.style.display = 'none';
+        }
+    };
+    
+    window.copyPixCode = function() {
+        const code = document.getElementById('pix-code');
+        if (code) {
+            code.select();
+            code.setSelectionRange(0, 99999);
+            document.execCommand('copy');
+            if (window.showToast) {
+                window.showToast('Código PIX copiado!', 'success');
+            } else {
+                alert('Código PIX copiado!');
+            }
+        }
+    };
+    
+    window.sendPixWhatsApp = function() {
+        if (!window.pixData) return;
+        
+        const phone = window.pixData.client_phone || '';
+        const amount = parseFloat(window.pixData.amount || 0).toFixed(2).replace('.', ',');
+        const code = window.pixData.qr_code || '';
+        const clientName = window.pixData.client_name || 'Cliente';
+        
+        // Mensagem formatada
+        const message = encodeURIComponent(
+            `Olá ${clientName}!\n\n` +
+            `Segue o código PIX para pagamento:\n\n` +
+            `💰 Valor: R$ ${amount}\n\n` +
+            `📋 Código PIX (Copiar e Colar):\n${code}\n\n` +
+            `Aguardo o pagamento. Obrigado!`
+        );
+        
+        // Link WhatsApp (web ou API)
+        let whatsappUrl;
+        if (phone) {
+            // Se tiver telefone, usar link direto
+            const phoneClean = phone.replace(/\D/g, '');
+            whatsappUrl = `https://wa.me/55${phoneClean}?text=${message}`;
+        } else {
+            // Se não tiver telefone, abrir WhatsApp Web sem destinatário
+            whatsappUrl = `https://web.whatsapp.com/send?text=${message}`;
+        }
+        
+        window.open(whatsappUrl, '_blank');
+    };
+    
+    // Fechar modal ao clicar fora
+    document.addEventListener('DOMContentLoaded', function() {
+        const pixModal = document.getElementById('pix-modal');
+        if (pixModal) {
+            pixModal.addEventListener('click', function(e) {
+                if (e.target === this) {
+                    window.closePixModal();
+                }
+            });
+        }
+        
+        // Event listeners para botões "Ver PIX"
+        document.querySelectorAll('.view-pix-btn').forEach(function(btn) {
+            btn.addEventListener('click', function() {
+                const pixData = {
+                    qr_code: btn.getAttribute('data-pix-qr-code') || '',
+                    qr_code_base64: btn.getAttribute('data-pix-qr-code-base64') || '',
+                    amount: parseFloat(btn.getAttribute('data-pix-amount') || 0),
+                    description: btn.getAttribute('data-pix-description') || '',
+                    client_name: btn.getAttribute('data-pix-client-name') || 'Cliente',
+                    client_phone: btn.getAttribute('data-pix-client-phone') || ''
+                };
+                window.showPixModal(pixData);
+            });
+        });
+    });
+    
+    document.addEventListener('DOMContentLoaded', function() {
+        // Toast para mensagens de sucesso e erro
+        const flashSuccess = @json(session('success'));
+        const flashError = @json(session('error'));
+        const validationErrors = @json($errors->all());
+        const boletoError = @json($errors->get('boleto'));
+        
+        if (flashSuccess) {
+            showToast(flashSuccess, 'success');
+        }
+        if (flashError) {
+            showToast(flashError, 'error');
+        }
+        if (validationErrors && validationErrors.length > 0) {
+            validationErrors.forEach(error => {
+                showToast(error, 'error');
+            });
+        }
+        if (boletoError && boletoError.length > 0) {
+            boletoError.forEach(error => {
+                showToast(error, 'error');
+            });
+        }
+        
+        // Verificar se há PIX gerado com sucesso
+        const pixSuccess = @json(session('pix_success'));
+        const pixError = @json($errors->get('pix'));
+        
+        if (pixSuccess && pixSuccess.qr_code) {
+            showPixModal(pixSuccess);
+        }
+        if (pixError && pixError.length > 0) {
+            pixError.forEach(error => {
+                showToast(error, 'error');
+            });
+        }
+        
+        function showToast(message, type) {
+            const toast = document.createElement('div');
+            toast.className = `fixed top-4 right-4 px-6 py-3 rounded-lg shadow-lg z-50 transform transition-all duration-300 translate-x-full`;
+            
+            if (type === 'success') {
+                toast.className += ' bg-green-500 text-white';
+                toast.innerHTML = `
+                    <div class="flex items-center">
+                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/>
+                        </svg>
+                        ${message}
+                    </div>
+                `;
+            } else {
+                toast.className += ' bg-red-500 text-white';
+                toast.innerHTML = `
+                    <div class="flex items-center">
+                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                        ${message}
+                    </div>
+                `;
+            }
+            
+            document.body.appendChild(toast);
+            
+            // Animar entrada
+            setTimeout(() => {
+                toast.classList.remove('translate-x-full');
+            }, 100);
+            
+            // Remover após 5 segundos
+            setTimeout(() => {
+                toast.classList.add('translate-x-full');
+                setTimeout(() => {
+                    if (toast.parentNode) {
+                        toast.parentNode.removeChild(toast);
+                    }
+                }, 300);
+            }, 5000);
+        }
+        
+        // Tornar showToast disponível globalmente também
+        window.showToast = showToast;
+    });
     </script>
 </x-app-layout>
 

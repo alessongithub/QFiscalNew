@@ -14,6 +14,10 @@ class GatewayConfig extends Model
         'public_key_sandbox', 'access_token_sandbox',
         'public_key_production', 'access_token_production', 'client_id_production', 'client_secret_production',
         'webhook_secret', 'block_login_after_days',
+        // Celcoin
+        'celcoin_client_id', 'celcoin_client_secret', 'celcoin_webhook_secret',
+        'celcoin_webhook_type', 'celcoin_webhook_login', 'celcoin_webhook_pwd',
+        'celcoin_galax_id', 'celcoin_galax_hash', 'celcoin_public_token', 'celcoin_api_version',
     ];
 
     public static function current(): self

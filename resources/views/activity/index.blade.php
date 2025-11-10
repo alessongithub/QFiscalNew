@@ -161,6 +161,17 @@
                                                                         'subject' => 'Assunto',
                                                                         'template' => 'Modelo',
                                                                         'has_pdf' => 'PDF anexado',
+                                                                        'cancel_reason' => 'Motivo do cancelamento',
+                                                                        'canceled_by' => 'Cancelado por',
+                                                                        'total_estornado' => 'Total estornado',
+                                                                        'total_cancelado' => 'Total cancelado',
+                                                                        'taxa_antecipacao' => 'Taxa de antecipação',
+                                                                        'receivables_count' => 'Quantidade de recebíveis',
+                                                                        'payment_type' => 'Tipo de pagamento',
+                                                                        'payment_method' => 'Forma de pagamento',
+                                                                        'qty' => 'Qtd',
+                                                                        'prev' => 'Anterior',
+                                                                        'new' => 'Novo',
                                                                     ];
                                                                     $fieldLabel = $fieldLabels[$field] ?? ucfirst(str_replace('_', ' ', $field));
                                                                 @endphp
@@ -238,6 +249,35 @@
                                                                         <span class="font-medium text-gray-700">{{ $fieldLabel }}:</span>
                                                                         <span class="text-gray-800"> {{ $templateLabel }}</span>
                                                                     </div>
+                                                                @elseif($field === 'payment_type' && is_string($change))
+                                                                    @php
+                                                                        $paymentTypeLabels = [
+                                                                            'immediate' => 'À vista',
+                                                                            'invoice' => 'Faturado',
+                                                                            'mixed' => 'Misto',
+                                                                        ];
+                                                                        $paymentTypeLabel = $paymentTypeLabels[$change] ?? $change;
+                                                                    @endphp
+                                                                    <div class="text-sm">
+                                                                        <span class="font-medium text-gray-700">{{ $fieldLabel }}:</span>
+                                                                        <span class="text-gray-800"> {{ $paymentTypeLabel }}</span>
+                                                                    </div>
+                                                                @elseif($field === 'payment_method' && is_string($change))
+                                                                    @php
+                                                                        $paymentMethodLabels = [
+                                                                            'cash' => 'Dinheiro',
+                                                                            'card' => 'Cartão',
+                                                                            'pix' => 'PIX',
+                                                                            'boleto' => 'Boleto',
+                                                                            'transfer' => 'Transferência',
+                                                                            'mixed' => 'Misto',
+                                                                        ];
+                                                                        $paymentMethodLabel = $paymentMethodLabels[$change] ?? $change;
+                                                                    @endphp
+                                                                    <div class="text-sm">
+                                                                        <span class="font-medium text-gray-700">{{ $fieldLabel }}:</span>
+                                                                        <span class="text-gray-800"> {{ $paymentMethodLabel }}</span>
+                                                                    </div>
                                                                 @elseif(is_string($change))
                                                                     <div class="text-sm">
                                                                         <span class="font-medium text-gray-700">{{ $fieldLabel }}:</span>
@@ -251,7 +291,13 @@
                                                                 @elseif(is_numeric($change))
                                                                     <div class="text-sm">
                                                                         <span class="font-medium text-gray-700">{{ $fieldLabel }}:</span>
-                                                                        <span class="text-gray-800"> {{ number_format((float)$change, 2, ',', '.') }}</span>
+                                                                        <span class="text-gray-800"> 
+                                                                            @if(in_array($field, ['qty', 'prev', 'new']))
+                                                                                {{ number_format((float)$change, 3, ',', '.') }}
+                                                                            @else
+                                                                                {{ number_format((float)$change, 2, ',', '.') }}
+                                                                            @endif
+                                                                        </span>
                                                                     </div>
                                                                 @elseif(is_array($change))
                                                                     @if($field === 'adjustments' && is_array($change))

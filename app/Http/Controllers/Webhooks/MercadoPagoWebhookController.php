@@ -106,7 +106,7 @@ class MercadoPagoWebhookController extends Controller
                 $invoice->save();
             } elseif ($receivable) {
                 $receivable->status = 'paid';
-                $receivable->payment_method = 'boleto';
+                $receivable->payment_method = ($paymentMethod === 'pix') ? 'pix' : 'boleto';
                 $receivable->received_at = now();
                 $receivable->save();
 
@@ -153,19 +153,29 @@ class MercadoPagoWebhookController extends Controller
 {
     try {
         $grossAmount = (float) ($paymentData['transaction_amount'] ?? $receivable->amount);
+        $paymentMethod = (string) ($paymentData['payment_method_id'] ?? $receivable->payment_method ?? '');
+        $isPix = ($paymentMethod === 'pix' || $receivable->payment_method === 'pix');
 
-        // Calcular taxa MP a partir de fee_details quando disponível
-        $fees = $paymentData['fee_details'] ?? [];
-        $totalFee = 0.0;
-        foreach ($fees as $fee) {
-            $totalFee += (float) ($fee['amount'] ?? 0);
-        }
-        // Fallback: usar taxa fixa de boleto configurada globalmente quando o MP não retornar fee_details
-        if ($totalFee > 0) {
-            $mpFeeAmount = $totalFee;
+        // Calcular taxa MP
+        $mpFeeAmount = 0.0;
+        
+        if ($isPix) {
+            // Taxa PIX: usar taxa percentual configurada
+            $pixFeePercent = (float) \App\Models\Setting::getGlobal('pix.mp_fee_percent', '0.99');
+            $mpFeeAmount = round($grossAmount * ($pixFeePercent / 100), 2);
         } else {
-            $configuredFixedFee = (float) (\App\Models\Setting::getGlobal('boleto.mp_fee_fixed', '1.99'));
-            $mpFeeAmount = round($configuredFixedFee, 2);
+            // Taxa Boleto: usar fee_details quando disponível, senão usar taxa fixa configurada
+            $fees = $paymentData['fee_details'] ?? [];
+            $totalFee = 0.0;
+            foreach ($fees as $fee) {
+                $totalFee += (float) ($fee['amount'] ?? 0);
+            }
+            if ($totalFee > 0) {
+                $mpFeeAmount = $totalFee;
+            } else {
+                $configuredFixedFee = (float) (\App\Models\Setting::getGlobal('boleto.mp_fee_fixed', '1.99'));
+                $mpFeeAmount = round($configuredFixedFee, 2);
+            }
         }
 
         // Taxa da plataforma de 1%

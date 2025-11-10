@@ -9,7 +9,9 @@ class PlanUpgradeController extends Controller
 {
     public function showUpgrade()
     {
-        $plans = Plan::where('active', true)->get();
+        $plans = Plan::where('active', true)
+            ->where('price', '>', 0)
+            ->get();
         $currentTenant = auth()->user()->tenant;
         $currentPlan = $currentTenant?->plan;
         $currentPlanId = (int) ($currentTenant?->plan_id ?? 0);
@@ -93,7 +95,31 @@ class PlanUpgradeController extends Controller
             return redirect()->route('dashboard')->with('success', 'Migrado para o plano gratuito.');
         }
 
-        // Para planos pagos, redirecionar para checkout
+        // Para planos pagos, preferir Celcoin se houver URL conhecida para o slug
+        $slug = strtolower((string) ($newPlan->slug ?? ''));
+        $celcoinLinks = [
+            'basico' => 'https://celcash.celcoin.com.br/qfiscal/basico',
+            'plano-enterprise' => 'https://celcash.celcoin.com.br/qfiscal/plano-enterprise',
+            'plano-platinum' => 'https://celcash.celcoin.com.br/qfiscal/plano-platinum',
+            'plano-profissional' => 'https://celcash.celcoin.com.br/qfiscal/plano-profissional',
+        ];
+        // Tolerância a variações comuns de slug
+        if (!isset($celcoinLinks[$slug])) {
+            if (str_contains($slug, 'basic') || str_contains($slug, 'basico')) {
+                $slug = 'basico';
+            } elseif (str_contains($slug, 'enterprise')) {
+                $slug = 'plano-enterprise';
+            } elseif (str_contains($slug, 'platinum')) {
+                $slug = 'plano-platinum';
+            } elseif (str_contains($slug, 'prof') || str_contains($slug, 'profi') || str_contains($slug, 'professional')) {
+                $slug = 'plano-profissional';
+            }
+        }
+        if (isset($celcoinLinks[$slug])) {
+            return redirect()->away($celcoinLinks[$slug]);
+        }
+
+        // Fallback: Mercado Pago checkout
         return redirect()->route('checkout.index', ['plan_id' => $newPlan->id]);
     }
 }

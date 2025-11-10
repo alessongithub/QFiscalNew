@@ -222,7 +222,7 @@
                         <svg class="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path>
                         </svg>
-                        Produtos
+                        Produtos/Serviços
                     </a>
                     @endif
                     @php $lm_nfe = (bool) config('app.limited_mode', false); $isFree_nfe = optional(auth()->user()->tenant?->plan)->slug === 'free'; @endphp
@@ -506,6 +506,16 @@
                                 $tenant = Auth::user()->tenant;
                                 $plan = optional($tenant)->plan;
                                 $nextDue = $tenant?->plan_expires_at ? \Carbon\Carbon::parse($tenant->plan_expires_at) : null;
+                                if (!$nextDue && $tenant) {
+                                    try {
+                                        if (\Illuminate\Support\Facades\Schema::hasTable('subscriptions') && \Illuminate\Support\Facades\Schema::hasColumn('subscriptions','current_period_end')) {
+                                            $fallback = \App\Models\Subscription::where('tenant_id', $tenant->id)
+                                                ->orderByDesc('current_period_end')
+                                                ->value('current_period_end');
+                                            $nextDue = $fallback ? \Carbon\Carbon::parse($fallback) : null;
+                                        }
+                                    } catch (\Throwable $e) { /* ignore */ }
+                                }
                                 // Últimos 5 pagamentos aprovados (faturas pagas) do tenant
                                 $invQuery = $tenant
                                     ? \App\Models\Payment::with('invoice')

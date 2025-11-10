@@ -14,7 +14,16 @@
     </style>
 </head>
 <body class="bg-gray-50">
-    <div class="min-h-screen" x-data="pos('{{ route('products.search') }}','{{ route('clients.search') }}')">
+    @if(isset($reopenOrder))
+        <script>
+            window.__REOPEN = {
+                order: @json($reopenOrder),
+                items: @json($reopenItems ?? []),
+                client: @json($reopenClient ?? null)
+            };
+        </script>
+    @endif
+    <div class="min-h-screen" x-data="pos('{{ route('products.search') }}','{{ route('clients.search') }}')" x-init="initReopen()" @keydown.window="if($event.key==='F4'){ $event.preventDefault(); window.location='{{ route('pos.sales') }}'; }">
         <!-- Header Moderno -->
         <div class="bg-white shadow-lg border-b-4 border-green-500">
             <div class="max-w-7xl mx-auto px-6 py-4">
@@ -35,7 +44,7 @@
                             <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
                             </svg>
-                            Histórico
+                            Histórico (F4)
                         </a>
                         <button @click="reset()" class="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors">
                             <svg class="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -369,15 +378,21 @@
 
                     <!-- Misto -->
                     <div x-show="payment_type==='mixed'" class="space-y-3">
-                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
                             <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">Entrada</label>
                                 <input type="number" min="0" step="0.01" x-model.number="entry_amount" class="w-full border border-gray-300 rounded-lg p-3">
                             </div>
                             <div>
+                                <label class="block text-sm font-medium text-gray-700 mb-1">Forma da Entrada</label>
+                                <select x-model="entry_method" class="w-full border border-gray-300 rounded-lg p-3">
+                                    <option value="cash">💵 Dinheiro</option>
+                                    <option value="card">💳 Cartão</option>
+                                </select>
+                            </div>
+                            <div>
                                 <label class="block text-sm font-medium text-gray-700 mb-1">Forma das Parcelas</label>
                                 <select x-model="installment_method" class="w-full border border-gray-300 rounded-lg p-3">
-                                    <option value="boleto">📄 Boleto</option>
                                     <option value="card">💳 Cartão</option>
                                 </select>
                             </div>
@@ -441,7 +456,7 @@
                 <div class="flex items-center justify-between pt-4 border-t">
                     <button class="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg" @click="showPaymentModal=false">Cancelar</button>
                     <button 
-                        @click="finalize(); showPaymentModal=false" 
+                        @click="finalize()" 
                         :disabled="items.length === 0 || (payment_type==='invoice' && useManualSchedule && (schedule.length===0 || scheduleSumMismatch)) || (payment_type==='mixed' && useManualScheduleMixed && (mixedSchedule.length===0 || mixedScheduleSumMismatch))"
                         :class="(items.length === 0 || (payment_type==='invoice' && useManualSchedule && (schedule.length===0 || scheduleSumMismatch)) || (payment_type==='mixed' && useManualScheduleMixed && (mixedSchedule.length===0 || mixedScheduleSumMismatch))) ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'"
                         class="px-6 py-3 text-white font-semibold rounded-lg shadow"
@@ -451,8 +466,70 @@
                 </div>
             </div>
         </div>
+
+        <!-- Modal PIX -->
+        <div x-cloak x-show="showPixModal" x-transition.opacity class="fixed inset-0 z-60 flex items-center justify-center">
+            <div class="absolute inset-0 bg-black bg-opacity-60"></div>
+            <div class="relative bg-white w-full max-w-2xl mx-4 rounded-2xl shadow-2xl overflow-hidden">
+                <div class="bg-gradient-to-r from-emerald-600 to-emerald-700 px-6 py-4 flex items-center justify-between">
+                    <h3 class="text-white text-lg font-semibold">Pague com PIX</h3>
+                    <button class="text-white hover:text-emerald-100" @click="cancelPix()">✕</button>
+                </div>
+                <div class="p-6 grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div class="flex flex-col items-center justify-center">
+                        <template x-if="pix_loading">
+                            <div class="w-64 h-64 border rounded-lg flex items-center justify-center text-gray-500">Gerando QR Code...</div>
+                        </template>
+                        <template x-if="!pix_loading && pix_qr_base64">
+                            <img :src="'data:image/png;base64,' + pix_qr_base64" alt="QR Code PIX" class="w-64 h-64 border rounded-lg shadow" />
+                        </template>
+                        <div class="mt-4 text-sm text-gray-600">Aponte a câmera do celular para o QR Code</div>
+                    </div>
+                    <div>
+                        <div class="text-gray-700 mb-2">Copia e Cola</div>
+                        <textarea x-ref="pixCopy" x-text="pix_qr_code" readonly class="w-full h-36 p-3 border rounded-lg text-xs"></textarea>
+                        <button class="mt-2 px-3 py-2 bg-gray-800 text-white rounded-lg" @click="copyPix()">Copiar código</button>
+                        <div class="mt-6 flex items-center justify-between bg-gray-50 p-3 rounded-lg">
+                            <div class="text-gray-700" x-text="'Aguardando (' + formatCountdown() + ')' "></div>
+                        </div>
+                        <div class="mt-4 text-sm text-gray-500">Total: <strong class="text-gray-900" x-text="formatMoney(total)"></strong></div>
+                        <div class="mt-6 flex gap-2">
+                            <button class="px-3 py-2 bg-gray-200 rounded" @click="reissuePix()">Reemitir PIX</button>
+                            <a :href="'{{ route('pos.sales') }}'" class="px-3 py-2 bg-gray-100 rounded">Abrir vendas (F4)</a>
+                        </div>
+                    </div>
+                </div>
+                <div class="px-6 py-4 border-t bg-gray-50 flex items-center justify-end">
+                    <button class="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-lg" @click="cancelPix()">Cancelar</button>
+                </div>
+            </div>
         </div>
-    </div>
+
+        <!-- Modal de Impressão (pagamentos não-PIX) -->
+        <div x-cloak x-show="showPrintModal" x-transition.opacity class="fixed inset-0 z-60 flex items-center justify-center">
+            <div class="absolute inset-0 bg-black bg-opacity-60"></div>
+            <div class="relative bg-white w-full max-w-md mx-4 rounded-2xl shadow-2xl overflow-hidden">
+                <div class="bg-gradient-to-r from-green-600 to-green-700 px-6 py-4 flex items-center justify-between">
+                    <h3 class="text-white text-lg font-semibold">✅ Venda concluída com sucesso!</h3>
+                    <button class="text-white hover:text-green-100" @click="closePrintModal()">✕</button>
+                </div>
+                <div class="p-6">
+                    <div class="text-center mb-6">
+                        <div class="text-gray-700 mb-2">Pedido: <strong class="text-gray-900">#<span x-text="printOrderId"></span></strong></div>
+                        <div class="text-gray-700">Total: <strong class="text-gray-900 text-xl" x-text="formatMoney(printTotal)"></strong></div>
+                    </div>
+                    <div class="flex gap-3 justify-center">
+                        <button class="px-6 py-3 bg-green-600 hover:bg-green-700 text-white rounded-lg font-medium" @click="printReceipt()">
+                            🖨️ Imprimir Recibo
+                        </button>
+                        <button class="px-6 py-3 bg-gray-200 hover:bg-gray-300 text-gray-800 rounded-lg font-medium" @click="closePrintModal()">
+                            Fechar
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        </div>
 
     <script>
         function pos(searchUrl, clientUrl) {
@@ -463,7 +540,8 @@
                 payment_type: 'immediate', 
                 payment_method: 'cash', 
                 installments: 3, 
-                installment_method: 'boleto', 
+                installment_method: 'card', 
+                entry_method: 'cash',
                 entry_amount: 0, 
                 subtotal: 0, 
                 total: 0,
@@ -481,6 +559,48 @@
                 mixedSchedule: [],
                 // Modal de pagamento
                 showPaymentModal: false,
+                // PIX state
+                showPixModal: false,
+                pix_qr_code: '',
+                pix_qr_base64: '',
+                pix_status_url: '',
+                pix_print_url: '',
+                pix_receipt_url: '',
+                pix_auto_print: {{ \App\Models\Setting::get('pos.auto_print_on_payment','0')==='1' ? 'true' : 'false' }},
+                countdownEndsAt: null,
+                pixExpiration: null,
+                pollHandle: null,
+                tickHandle: null,
+                nowTs: Date.now(),
+                lastOrderId: null,
+                pix_loading: false,
+                // Modal de impressão (não-PIX)
+                showPrintModal: false,
+                printOrderId: null,
+                printTotal: 0,
+                printUrl: '',
+                receiptUrl: '',
+                initReopen(){
+                    try{
+                        const r = window.__REOPEN;
+                        if (!r) return;
+                        if (Array.isArray(r.items) && r.items.length){
+                            this.items = r.items.map(it => ({
+                                product_id: it.product_id,
+                                name: it.name,
+                                unit: it.unit,
+                                quantity: parseFloat(it.quantity||1),
+                                unit_price: parseFloat(it.unit_price||0)
+                            }));
+                            this.recalc();
+                        }
+                        if (r.client){
+                            this.clientSelected = r.client;
+                            this.clientSearch = r.client.name;
+                        }
+                        if (r.order && r.order.id){ this.lastOrderId = r.order.id; }
+                    }catch(e){}
+                },
 
                 formatMoney(v) { 
                     return 'R$ ' + (v || 0).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.'); 
@@ -493,12 +613,24 @@
                     this.payment_type = 'immediate'; 
                     this.payment_method = 'cash'; 
                     this.installments = 3; 
-                    this.installment_method = 'boleto'; 
+                    this.installment_method = 'card'; 
+                    this.entry_method = 'cash';
                     this.entry_amount = 0; 
                     this.clientSearch = '';
                     this.clientResults = [];
                     this.clientSelected = null;
                     this.recalc(); 
+                    this.stopPixPolling();
+                    this.showPixModal = false;
+                    this.pix_qr_code = '';
+                    this.pix_qr_base64 = '';
+                    this.pix_status_url = '';
+                    this.pix_print_url = '';
+                    this.pix_receipt_url = '';
+                    this.countdownEndsAt = null;
+                    this.pixExpiration = null;
+                    this.stopTick();
+                    this.lastOrderId = null;
                 },
 
                 async search() {
@@ -615,6 +747,85 @@
                 if (mode==='mixed') { this.mixedSchedule = arr; } else { this.schedule = arr; }
             },
 
+                startPixCountdown(expiresAtIso) {
+                    try {
+                        const exp = expiresAtIso ? new Date(expiresAtIso) : new Date(Date.now() + 5*60*1000);
+                        this.pixExpiration = exp;
+                        this.countdownEndsAt = new Date(Date.now() + 30*1000);
+                        this.startTick();
+                    } catch(_){ this.countdownEndsAt = new Date(Date.now() + 5*60*1000); }
+                },
+                formatCountdown() {
+                    if (!this.countdownEndsAt) return '00:30';
+                    // estende de 30 em 30 até expirar no MP
+                    const now = this.nowTs || Date.now();
+                    if (this.pixExpiration && now > this.countdownEndsAt.getTime() && now < this.pixExpiration.getTime()) {
+                        this.countdownEndsAt = new Date(Math.min(this.pixExpiration.getTime(), now + 30*1000));
+                    }
+                    const diff = Math.max(0, Math.floor((this.countdownEndsAt.getTime() - now)/1000));
+                    const m = String(Math.floor(diff/60)).padStart(2,'0');
+                    const s = String(diff%60).padStart(2,'0');
+                    return m+':'+s;
+                },
+                startTick(){ this.stopTick(); this.tickHandle = setInterval(()=>{ this.nowTs = Date.now(); }, 1000); },
+                stopTick(){ if (this.tickHandle){ clearInterval(this.tickHandle); this.tickHandle=null; } },
+                startPixPolling() {
+                    this.stopPixPolling();
+                    this.pollHandle = setInterval(async () => {
+                        try {
+                            const r = await fetch(this.pix_status_url, { headers: { 'Accept':'application/json' } });
+                            if (r.ok) {
+                                const j = await r.json();
+                                if (j.approved) {
+                                    this.stopPixPolling();
+                                    this.showPixModal = false;
+                                    // Abre comprovante ou imprime direto
+                                    if (this.pix_auto_print) {
+                                        window.open(this.pix_print_url, '_blank');
+                                    } else {
+                                        window.open(this.pix_receipt_url, '_blank');
+                                    }
+                                    this.reset();
+                                }
+                            }
+                        } catch (e) { /* ignore transient errors */ }
+                    }, 2000);
+                },
+                stopPixPolling() { if (this.pollHandle) { clearInterval(this.pollHandle); this.pollHandle = null; } },
+                cancelPix() { this.stopPixPolling(); this.showPixModal = false; },
+                copyPix() { try { const t=this.$refs.pixCopy; t.select(); document.execCommand('copy'); } catch(_){} },
+                printReceipt() {
+                    if (this.printUrl) {
+                        window.open(this.printUrl, '_blank');
+                    }
+                    this.closePrintModal();
+                },
+                closePrintModal() {
+                    this.showPrintModal = false;
+                    this.printOrderId = null;
+                    this.printTotal = 0;
+                    this.printUrl = '';
+                    this.receiptUrl = '';
+                    this.reset();
+                },
+                async reissuePix(){
+                    try{
+                        const orderId = this.lastOrderId;
+                        if (!orderId) return;
+                        const r = await fetch(`/pos/${orderId}/pay-pix`, { method:'POST', headers: { 'X-CSRF-TOKEN': '{{ csrf_token() }}', 'Accept':'application/json' } });
+                        const j = await r.json();
+                        if (!j.ok) { alert('❌ ' + (j.error||'Falha reemitindo PIX')); return; }
+                        this.pix_qr_code = j.qr_code;
+                        this.pix_qr_base64 = j.qr_code_base64;
+                        this.pix_status_url = j.status_url;
+                        this.pix_print_url = j.print_url;
+                        this.pix_receipt_url = j.receipt_url;
+                        this.showPixModal = true;
+                        this.startPixCountdown(j.expires_at);
+                        this.startPixPolling();
+                    } catch(e){ alert('❌ ' + (e?.message||'Falha reemitindo PIX')); }
+                },
+
                 async finalize() {
                     const requireClient = '{{ \App\Models\Setting::get('pos.require_client','0') }}' === '1';
                     
@@ -639,8 +850,10 @@
                         payment_type: this.payment_type, 
                         installments: this.installments, 
                         installment_method: this.installment_method, 
+                        entry_method: this.entry_method,
                         entry_amount: this.entry_amount 
                     };
+                    if (this.lastOrderId) { payload.order_id = this.lastOrderId; }
                     // Anexa cronograma manual se houver
                     if (this.payment_type==='invoice' && this.useManualSchedule && this.schedule.length>0 && !this.scheduleSumMismatch) {
                         payload.schedule = this.schedule;
@@ -657,6 +870,11 @@
                     }
 
                     try {
+                        if (this.payment_type==='immediate' && this.payment_method==='pix') {
+                            this.pix_loading = true;
+                            this.showPaymentModal = false;
+                            this.showPixModal = true;
+                        }
                         const response = await fetch("{{ route('pos.store') }}", { 
                             method: 'POST', 
                             headers: { 
@@ -691,17 +909,46 @@
 
                         const data = await response.json();
                         
-                        if (data.ok) { 
-                            alert('✅ Venda concluída com sucesso!\n\n' + 
-                                  'Pedido: #' + data.order_id + '\n' + 
-                                  'Total: ' + this.formatMoney(data.total) + '\n\n' + 
-                                  'Frete por conta do cliente.'); 
-                            this.reset(); 
+                        if (data.ok) {
+                            this.lastOrderId = data.order_id; // Define o lastOrderId
+                            if (data.is_pix) {
+                                // Exibir modal PIX
+                                this.pix_qr_code = data.qr_code;
+                                this.pix_qr_base64 = data.qr_code_base64;
+                                this.pix_status_url = data.status_url;
+                                this.pix_print_url = data.print_url;
+                                this.pix_receipt_url = data.receipt_url;
+                                if (typeof data.auto_print === 'boolean') { this.pix_auto_print = data.auto_print; }
+                                this.pix_loading = false;
+                                this.showPaymentModal = false;
+                                this.$nextTick(() => { this.showPixModal = true; });
+                                this.startPixCountdown(data.expires_at);
+                                this.startPixPolling();
+                            } else {
+                                // Pagamento não-PIX (dinheiro/cartão)
+                                const autoPrint = data.auto_print === true;
+                                if (autoPrint) {
+                                    // Imprimir automaticamente
+                                    if (data.print_url) {
+                                        window.open(data.print_url, '_blank');
+                                    }
+                                    this.reset();
+                                } else {
+                                    // Mostrar modal com opção de imprimir
+                                    this.showPrintModal = true;
+                                    this.printOrderId = data.order_id;
+                                    this.printTotal = data.total;
+                                    this.printUrl = data.print_url || '';
+                                    this.receiptUrl = data.receipt_url || '';
+                                }
+                            }
                         } else { 
+                            if (this.pix_loading) { this.pix_loading = false; this.showPixModal = false; }
                             alert('❌ Erro: ' + (data.error || 'Falha desconhecida')); 
                         }
                     } catch (error) {
                         console.error('Erro ao finalizar venda:', error);
+                        if (this.pix_loading) { this.pix_loading = false; this.showPixModal = false; }
                         alert('❌ Erro: ' + (error?.message || 'Falha inesperada. Tente novamente.'));
                     }
             }

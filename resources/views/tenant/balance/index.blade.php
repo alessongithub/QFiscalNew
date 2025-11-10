@@ -34,7 +34,7 @@
                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Descrição</th>
                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Bruto</th>
                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Taxa MP</th>
-                    
+                    <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Taxa Plataforma</th>
                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Líquido</th>
                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Status</th>
                     <th class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase">Ações</th>
@@ -47,7 +47,7 @@
                         <td class="px-4 py-2">{{ $balance->receivable->description ?? 'N/A' }}</td>
                         <td class="px-4 py-2">R$ {{ number_format($balance->gross_amount, 2, ',', '.') }}</td>
                         <td class="px-4 py-2">R$ {{ number_format($balance->mp_fee_amount, 2, ',', '.') }}</td>
-                        
+                        <td class="px-4 py-2">R$ {{ number_format($balance->platform_fee_amount, 2, ',', '.') }}</td>
                         <td class="px-4 py-2 font-semibold">R$ {{ number_format($balance->net_amount, 2, ',', '.') }}</td>
                         <td class="px-4 py-2">
                             @switch($balance->status)
@@ -82,7 +82,7 @@
                     </tr>
                 @empty
                     <tr>
-                        <td class="px-4 py-6 text-center text-gray-500" colspan="7">Nenhum saldo encontrado.</td>
+                        <td class="px-4 py-6 text-center text-gray-500" colspan="8">Nenhum saldo encontrado.</td>
                     </tr>
                 @endforelse
             </tbody>

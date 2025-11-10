@@ -25,6 +25,7 @@ class ReceivableController extends Controller
         $dateFrom = $request->get('date_from');
         $dateTo = $request->get('date_to');
         $overdue = $request->boolean('overdue');
+        $orderNumber = $request->get('order_number');
         if ($status) {
             if (is_array($status)) {
                 $query->whereIn('status', $status);
@@ -45,6 +46,11 @@ class ReceivableController extends Controller
         if ($request->boolean('has_boleto')) {
             $query->whereNotNull('boleto_mp_id');
         }
+        if ($orderNumber) {
+            $query->whereHas('order', function($q) use ($orderNumber) {
+                $q->where('number', 'like', "%{$orderNumber}%");
+            });
+        }
 
         // Somatórios (com os mesmos filtros aplicados)
         $base = Receivable::where('tenant_id', $tenantId);
@@ -64,6 +70,11 @@ class ReceivableController extends Controller
         if ($request->boolean('has_boleto')) {
             $base->whereNotNull('boleto_mp_id');
         }
+        if ($orderNumber) {
+            $base->whereHas('order', function($q) use ($orderNumber) {
+                $q->where('number', 'like', "%{$orderNumber}%");
+            });
+        }
 
         $totalOpen = (clone $base)->whereIn('status', ['open','partial'])->sum('amount');
         $totalPaid = (clone $base)->where('status', 'paid')->sum('amount');
@@ -79,7 +90,7 @@ class ReceivableController extends Controller
         if ($perPage > 200) { $perPage = 200; }
 
         $receivables = $query->paginate($perPage)->appends($request->query());
-        return view('receivables.index', compact('receivables', 'totalOpen', 'totalPaid', 'totalOverdue', 'status', 'dateFrom', 'dateTo', 'sort', 'direction', 'overdue'));
+        return view('receivables.index', compact('receivables', 'totalOpen', 'totalPaid', 'totalOverdue', 'status', 'dateFrom', 'dateTo', 'sort', 'direction', 'overdue', 'orderNumber'));
     }
 
     public function create()
@@ -439,7 +450,7 @@ class ReceivableController extends Controller
         $accessToken = $config->active_access_token;
         if (empty($accessToken)) {
             \Log::error('Access Token do Mercado Pago não configurado');
-            return back()->withErrors(['boleto' => 'Access Token do Mercado Pago não configurado.']);
+            return back()->withErrors(['boleto' => 'Token de acesso do Mercado Pago não configurado. Configure em Configurações > Gateway de Pagamento.']);
         }
 
         if (!$receivable->client || !$receivable->client->email) {
@@ -522,7 +533,164 @@ class ReceivableController extends Controller
                 'status' => $response->status(),
                 'body' => $response->body()
             ]);
-            return back()->withErrors(['boleto' => 'Falha ao emitir boleto: ' . $response->body()])->withInput();
+            
+            // Traduzir erros do Mercado Pago para português amigável
+            $errorMessage = 'Falha ao emitir boleto. Tente novamente.';
+            try {
+                $errorJson = $response->json();
+                $errorText = $response->body();
+                
+                // Função para traduzir mensagens em inglês comuns
+                $translateError = function($text) {
+                    $textLower = strtolower(trim($text));
+                    
+                    // Traduções de mensagens comuns
+                    $translations = [
+                        'the expiration date can not be greater than 29 days' => 'A data de vencimento não pode ser maior que 29 dias. Use uma data dentro do prazo permitido.',
+                        'expiration date can not be greater than 29 days' => 'A data de vencimento não pode ser maior que 29 dias. Use uma data dentro do prazo permitido.',
+                        'the expiration date cannot be greater than 29 days' => 'A data de vencimento não pode ser maior que 29 dias. Use uma data dentro do prazo permitido.',
+                        'expiration date cannot be greater than 29 days' => 'A data de vencimento não pode ser maior que 29 dias. Use uma data dentro do prazo permitido.',
+                        'expiration date' => 'Data de vencimento inválida.',
+                        'invalid email' => 'E-mail do cliente inválido. Verifique o cadastro do cliente.',
+                        'invalid identification' => 'CPF/CNPJ do cliente inválido. Verifique o cadastro do cliente.',
+                        'invalid zip code' => 'CEP do cliente inválido. Verifique o cadastro do cliente.',
+                        'invalid address' => 'Endereço do cliente inválido ou incompleto. Verifique o cadastro do cliente.',
+                        'invalid expiration date' => 'Data de vencimento inválida. Use uma data válida.',
+                        'amount error' => 'Valor do boleto inválido. Verifique o valor.',
+                        'payer not found' => 'Dados do cliente incompletos. Complete o cadastro do cliente.',
+                        'invalid payer' => 'Dados do pagador inválidos. Verifique o cadastro do cliente.',
+                        'required field' => 'Campo obrigatório não preenchido. Verifique os dados do cliente.',
+                        'unauthorized' => 'Não autorizado. Verifique as configurações do gateway de pagamento.',
+                        'bad request' => 'Requisição inválida. Verifique os dados informados.',
+                        'not found' => 'Recurso não encontrado.',
+                        'internal server error' => 'Erro interno do servidor. Tente novamente mais tarde.',
+                    ];
+                    
+                    // Verificar tradução exata
+                    if (isset($translations[$textLower])) {
+                        return $translations[$textLower];
+                    }
+                    
+                    // Verificar tradução parcial
+                    foreach ($translations as $key => $translation) {
+                        if (str_contains($textLower, $key)) {
+                            return $translation;
+                        }
+                    }
+                    
+                    // Traduzir palavras-chave comuns
+                    if ((str_contains($textLower, 'expiration') || str_contains($textLower, 'expiry')) && 
+                        (str_contains($textLower, 'greater') || str_contains($textLower, 'more than')) && 
+                        (str_contains($textLower, '29') || str_contains($textLower, 'thirty'))) {
+                        return 'A data de vencimento não pode ser maior que 29 dias. Use uma data dentro do prazo permitido.';
+                    }
+                    if ((str_contains($textLower, 'expiration') || str_contains($textLower, 'expiry')) && 
+                        str_contains($textLower, 'date') && 
+                        (str_contains($textLower, 'invalid') || str_contains($textLower, 'error'))) {
+                        return 'Data de vencimento inválida. A data não pode ser maior que 29 dias a partir de hoje.';
+                    }
+                    if (str_contains($textLower, 'expiration') || str_contains($textLower, 'expiry')) {
+                        return 'Data de vencimento inválida. Verifique a data informada.';
+                    }
+                    if (str_contains($textLower, 'email') && (str_contains($textLower, 'invalid') || str_contains($textLower, 'required'))) {
+                        return 'E-mail do cliente inválido ou não informado. Verifique o cadastro do cliente.';
+                    }
+                    if (str_contains($textLower, 'cpf') || str_contains($textLower, 'cnpj') || (str_contains($textLower, 'identification') && str_contains($textLower, 'invalid'))) {
+                        return 'CPF/CNPJ do cliente inválido. Verifique o cadastro do cliente.';
+                    }
+                    if (str_contains($textLower, 'address') && (str_contains($textLower, 'invalid') || str_contains($textLower, 'required'))) {
+                        return 'Endereço do cliente inválido ou incompleto. Verifique o cadastro do cliente.';
+                    }
+                    if (str_contains($textLower, 'zip') || str_contains($textLower, 'cep')) {
+                        return 'CEP do cliente inválido. Verifique o cadastro do cliente.';
+                    }
+                    if (str_contains($textLower, 'amount') && (str_contains($textLower, 'invalid') || str_contains($textLower, 'error'))) {
+                        return 'Valor do boleto inválido. Verifique o valor.';
+                    }
+                    
+                    return null;
+                };
+                
+                if (is_array($errorJson)) {
+                    $errorCause = $errorJson['cause'] ?? [];
+                    $firstError = is_array($errorCause) && !empty($errorCause) ? $errorCause[0] : null;
+                    
+                    if ($firstError && isset($firstError['code'])) {
+                        $errorCode = $firstError['code'];
+                        $errorDescription = $firstError['description'] ?? '';
+                        
+                        // Mapear códigos de erro comuns para mensagens amigáveis
+                        $errorMessages = [
+                            'invalid_email' => 'E-mail do cliente inválido. Verifique o cadastro do cliente.',
+                            'invalid_identification' => 'CPF/CNPJ do cliente inválido. Verifique o cadastro do cliente.',
+                            'invalid_zip_code' => 'CEP do cliente inválido. Verifique o cadastro do cliente.',
+                            'invalid_address' => 'Endereço do cliente inválido ou incompleto. Verifique o cadastro do cliente.',
+                            'invalid_expiration_date' => 'Data de vencimento inválida. A data não pode ser maior que 29 dias a partir de hoje.',
+                            'amount_error' => 'Valor do boleto inválido. Verifique o valor.',
+                            'payer_not_found' => 'Dados do cliente incompletos. Complete o cadastro do cliente.',
+                            'invalid_payer' => 'Dados do pagador inválidos. Verifique o cadastro do cliente.',
+                        ];
+                        
+                        if (isset($errorMessages[$errorCode])) {
+                            $errorMessage = $errorMessages[$errorCode];
+                        } elseif (!empty($errorDescription)) {
+                            // Tentar traduzir a descrição
+                            $translated = $translateError($errorDescription);
+                            if ($translated) {
+                                $errorMessage = $translated;
+                            } else {
+                                $errorMessage = 'Erro ao emitir boleto: ' . $errorDescription;
+                            }
+                        }
+                    } elseif (isset($errorJson['message'])) {
+                        // Tentar traduzir a mensagem
+                        $translated = $translateError($errorJson['message']);
+                        $errorMessage = $translated ?: 'Erro ao emitir boleto: ' . $errorJson['message'];
+                    }
+                } else {
+                    // Tentar traduzir o texto da resposta
+                    $translated = $translateError($errorText);
+                    if ($translated) {
+                        $errorMessage = $translated;
+                    }
+                }
+                
+                // Se ainda não traduziu, tentar traduzir todas as mensagens do array de erros
+                if ($errorMessage === 'Falha ao emitir boleto. Tente novamente.' && is_array($errorJson)) {
+                    // Tentar traduzir todos os erros no array cause
+                    if (isset($errorJson['cause']) && is_array($errorJson['cause'])) {
+                        foreach ($errorJson['cause'] as $cause) {
+                            if (isset($cause['description'])) {
+                                $translated = $translateError($cause['description']);
+                                if ($translated) {
+                                    $errorMessage = $translated;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // Tentar traduzir mensagem genérica
+                    if (isset($errorJson['message']) && $errorMessage === 'Falha ao emitir boleto. Tente novamente.') {
+                        $translated = $translateError($errorJson['message']);
+                        if ($translated) {
+                            $errorMessage = $translated;
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Se não conseguir parsear JSON, tentar traduzir o texto bruto
+                try {
+                    $bodyText = $response->body();
+                    $translated = $translateError($bodyText);
+                    if ($translated) {
+                        $errorMessage = $translated;
+                    }
+                } catch (\Throwable $e2) {
+                    \Log::warning('Erro ao parsear resposta de erro do MP', ['error' => $e->getMessage()]);
+                }
+            }
+            
+            return back()->withErrors(['boleto' => $errorMessage])->withInput();
         }
 
         $json = $response->json();
@@ -630,6 +798,120 @@ class ReceivableController extends Controller
         }
 
         return back()->with('success', 'Boleto emitido com sucesso.');
+    }
+
+    public function emitPix(Receivable $receivable)
+    {
+        abort_unless(auth()->user()->hasPermission('receivables.receive'), 403);
+        abort_unless($receivable->tenant_id === auth()->user()->tenant_id, 403);
+
+        if ($receivable->status === 'paid') {
+            return back()->withErrors(['pix' => 'Este recebível já foi pago.']);
+        }
+
+        $config = GatewayConfig::current();
+        $accessToken = $config->active_access_token;
+        if (empty($accessToken)) {
+            return back()->withErrors(['pix' => 'Token de acesso do Mercado Pago não configurado. Configure em Configurações > Gateway de Pagamento.']);
+        }
+
+        $amount = (float) $receivable->amount;
+        if ($amount < 0.5) {
+            return back()->withErrors(['pix' => 'Valor mínimo para PIX é R$ 0,50']);
+        }
+
+        $client = $receivable->client;
+        $clientName = $client?->name ?: 'Cliente';
+        $parts = explode(' ', trim($clientName), 2);
+        $firstName = $parts[0] ?? 'Cliente';
+        $lastName = $parts[1] ?? '';
+
+        $payload = [
+            'transaction_amount' => $amount,
+            'description' => (string) ($receivable->description ?: 'Cobrança'),
+            'payment_method_id' => 'pix',
+            'external_reference' => 'rec_' . $receivable->id,
+        ];
+
+        // Sandbox exige e-mail de test user do MP
+        $isSandbox = (string) ($config->mode ?? 'sandbox') === 'sandbox';
+        $sandboxEmail = (string) (\App\Models\Setting::getGlobal('pos.pix_sandbox_email',''));
+        if ($isSandbox) {
+            if ($sandboxEmail === '' || !filter_var($sandboxEmail, FILTER_VALIDATE_EMAIL)) {
+                return back()->withErrors(['pix' => 'Configure um e-mail de teste PIX em /admin (Gateway) para gerar cobranças no sandbox.']);
+            }
+            $payload['payer'] = ['email' => $sandboxEmail];
+        } else {
+            $email = (string) ($client?->email ?? (auth()->user()->tenant->email ?? ''));
+            if ($email !== '' && filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                $payload['payer'] = ['email' => $email];
+            }
+        }
+
+        $resp = Http::withHeaders([
+            'Authorization' => 'Bearer ' . $accessToken,
+            'Content-Type' => 'application/json',
+            'X-Idempotency-Key' => 'rec_' . $receivable->id . '_' . time(),
+        ])->post('https://api.mercadopago.com/v1/payments', $payload);
+
+        if (!$resp->successful()) {
+            $body = $resp->json();
+            $isInvalidEmail = false;
+            $isParamsError = false;
+            if (is_array($body) && ($body['error'] ?? '') === 'bad_request' && !empty($body['cause']) && is_array($body['cause'])) {
+                foreach ($body['cause'] as $c) {
+                    $code = (int)($c['code'] ?? 0);
+                    if ($code === 4050) { $isInvalidEmail = true; }
+                    if ($code === 1) { $isParamsError = true; }
+                }
+            }
+            if ($isInvalidEmail && isset($payload['payer']['email'])) {
+                unset($payload['payer']['email']);
+                $resp = Http::withHeaders([
+                    'Authorization' => 'Bearer ' . $accessToken,
+                    'Content-Type' => 'application/json',
+                    'X-Idempotency-Key' => 'rec_' . $receivable->id . '_' . time(),
+                ])->post('https://api.mercadopago.com/v1/payments', $payload);
+            }
+            if (!$resp->successful() && $isParamsError && !isset($payload['payer'])) {
+                $payload['payer'] = ['first_name' => $firstName, 'last_name' => $lastName];
+                $resp = Http::withHeaders([
+                    'Authorization' => 'Bearer ' . $accessToken,
+                    'Content-Type' => 'application/json',
+                    'X-Idempotency-Key' => 'rec_' . $receivable->id . '_' . time(),
+                ])->post('https://api.mercadopago.com/v1/payments', $payload);
+            }
+            if (!$resp->successful()) {
+                \Log::error('PIX create failed for receivable', [
+                    'status' => $resp->status(),
+                    'body' => $resp->body(),
+                    'receivable_id' => $receivable->id
+                ]);
+                return back()->withErrors(['pix' => 'Falha ao criar cobrança PIX. Tente novamente.']);
+            }
+        }
+
+        $json = $resp->json();
+        $mpId = (string) ($json['id'] ?? '');
+        $qrCode = (string) ($json['point_of_interaction']['transaction_data']['qr_code'] ?? '');
+        $qrCodeBase64 = (string) ($json['point_of_interaction']['transaction_data']['qr_code_base64'] ?? '');
+
+        // Atualizar recebível com dados do PIX
+        $receivable->pix_mp_id = $mpId;
+        $receivable->pix_qr_code = $qrCode;
+        $receivable->pix_qr_code_base64 = $qrCodeBase64;
+        $receivable->pix_emitted_at = now();
+        $receivable->payment_method = 'pix'; // Atualizar método de pagamento
+        $receivable->save();
+
+        return back()->with('pix_success', [
+            'qr_code' => $qrCode,
+            'qr_code_base64' => $qrCodeBase64,
+            'amount' => $amount,
+            'description' => $receivable->description,
+            'client_name' => $clientName,
+            'client_phone' => preg_replace('/\D/', '', $client?->phone ?? ''),
+        ]);
     }
 
     public function receiveBulk(Request $request)

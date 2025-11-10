@@ -108,6 +108,25 @@
                                style="focus:ring-color: {{ $brandPrimary }}" maxlength="200" 
                                placeholder="Digite o texto que aparecerá no rodapé dos comprovantes">
                     </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                        <div class="space-y-2">
+                            <label class="block text-sm font-medium text-gray-700">Tipo de Impressora Térmica</label>
+                            <select name="print[printer_type]" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:border-transparent transition-all" style="focus:ring-color: {{ $brandPrimary }}">
+                                <option value="thermal_58" @selected(($values['print.printer_type']??'thermal_80')==='thermal_58')>58 mm</option>
+                                <option value="thermal_80" @selected(($values['print.printer_type']??'thermal_80')==='thermal_80')>80 mm</option>
+                                <option value="system" @selected(($values['print.printer_type']??'thermal_80')==='system')>Impressora do Sistema</option>
+                            </select>
+                            <p class="text-xs text-gray-500">Use "Impressora do Sistema" para usar a configuração do navegador.</p>
+                        </div>
+                        <div class="space-y-2">
+                            <label class="block text-sm font-medium text-gray-700">Colunas do Cupom</label>
+                            <input type="number" min="16" max="64" name="print[ticket_columns]" value="{{ $values['print.ticket_columns'] ?? '42' }}"
+                                   class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:border-transparent transition-all"
+                                   style="focus:ring-color: {{ $brandPrimary }}" placeholder="Ex.: 32, 42, 48">
+                            <p class="text-xs text-gray-500">Ajuste conforme a impressora (58mm≈32, 80mm≈42/48).</p>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -182,6 +201,14 @@
                                 <option value="pix" @selected(($values['pos.default_cash_method']??'cash')==='pix')>📱 PIX</option>
                             </select>
                         </div>
+
+                        <div class="space-y-2">
+                            <label class="block text-sm font-medium text-gray-700">Imprimir automaticamente após pagamento aprovado</label>
+                            <select name="pos[auto_print_on_payment]" class="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all">
+                                <option value="0" @selected(($values['pos.auto_print_on_payment']??'0')==='0')>❌ Não</option>
+                                <option value="1" @selected(($values['pos.auto_print_on_payment']??'0')==='1')>✅ Sim</option>
+                            </select>
+                        </div>
                         
                         <div class="space-y-2">
                             <label class="block text-sm font-medium text-gray-700">Forma de Pagamento Parcelado</label>
@@ -190,6 +217,7 @@
                                 <option value="card" @selected(($values['pos.default_installment_method']??'boleto')==='card')>💳 Cartão</option>
                 </select>
             </div>
+
 
             <!-- Retenção de Logs -->
             <div class="bg-white rounded-xl shadow-lg overflow-hidden">

@@ -18,6 +18,11 @@ class ProductController extends Controller
         $tenantId = auth()->user()->tenant_id;
         $query = Product::where('tenant_id', $tenantId);
 
+        // Filtro por tipo (product/service)
+        if ($request->filled('type') && in_array($request->type, ['product', 'service'], true)) {
+            $query->where('type', $request->type);
+        }
+
         if ($request->filled('search')) {
             $s = $request->search;
             $query->where(function ($q) use ($s) {
@@ -486,8 +491,14 @@ class ProductController extends Controller
         $tenantId = auth()->user()->tenant_id;
         $term = trim((string) $request->get('term', ''));
         $q = \App\Models\Product::where('tenant_id', $tenantId)
-            ->where('active', 1)
-            ->whereIn('type', ['product','service']);
+            ->where('active', 1);
+        
+        // Se for para stock/create, mostrar apenas produtos (não serviços)
+        if ($request->get('for_stock') === 'true') {
+            $q->where('type', 'product');
+        } else {
+            $q->whereIn('type', ['product','service']);
+        }
         if ($term !== '') {
             $q->where(function ($qq) use ($term) {
                 $qq->where('name', 'like', "%{$term}%")
